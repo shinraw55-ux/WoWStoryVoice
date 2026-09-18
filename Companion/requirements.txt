@@ -4,3 +4,5 @@ soundfile
 chatterbox-tts==0.1.7
 pystray
 Pillow
+kokoro-onnx==0.6.1
+onnxruntime-gpu
