@@ -11,13 +11,14 @@ import sounddevice as sd
 import soundfile as sf
 from kokoro_onnx import Kokoro
 
-VERSION = "0.3.6"
-MAGIC = b"WSV2"
+VERSION = "0.4.0"
+MAGIC = b"WSV4"
 PIXEL_SIZE = 5
 X0, Y0 = 20, 20
 MAX_PACKET = 103
-SEARCH_X = 1400
-SEARCH_Y = 300
+CELL_COUNT = MAX_PACKET * 2
+SEARCH_X = 1600
+SEARCH_Y = 350
 
 MODEL_URL = "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.1/kokoro-v1.0.onnx"
 VOICES_URL = "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.1/voices-v1.0.bin"
@@ -61,52 +62,57 @@ def ensure_models():
     download(MODEL_URL, MODEL, "Kokoro voice model")
     download(VOICES_URL, VOICES, "Kokoro voice library")
 
+def _cell_level(img, cell_index):
+    x0 = cell_index * PIXEL_SIZE
+    # Median over the cell interior suppresses edge scaling/antialiasing.
+    patch = img[1:PIXEL_SIZE-1, x0+1:x0+PIXEL_SIZE-1, :3]
+    gray = float(np.median(patch))
+    # Sender uses 16 evenly spaced levels (0,17,...255).
+    return max(0, min(15, int(round(gray / 17.0))))
+
 def sample_packet_at(sct, left, top):
-    width = MAX_PACKET * PIXEL_SIZE
+    width = CELL_COUNT * PIXEL_SIZE
     img = np.array(sct.grab({"left": left, "top": top, "width": width, "height": PIXEL_SIZE}))
     out = bytearray()
     for i in range(MAX_PACKET):
-        x = i * PIXEL_SIZE + PIXEL_SIZE // 2
-        b, g, r = img[PIXEL_SIZE // 2, x, :3]
-        out.append(int(round((int(r)+int(g)+int(b))/3)))
+        hi = _cell_level(img, i * 2)
+        lo = _cell_level(img, i * 2 + 1)
+        out.append((hi << 4) | lo)
     return bytes(out)
 
+def decode(raw):
+    if raw is None or len(raw) < 7 or raw[:4] != MAGIC:
+        return None
+    seq, ln = raw[4], raw[5]
+    if ln > 96 or 6 + ln >= len(raw):
+        return None
+    payload = raw[6:6+ln]
+    if sum(payload) % 256 != raw[6+ln]:
+        return None
+    try:
+        kind, npc, text = payload.decode("utf-8").split("\x1f", 2)
+    except (ValueError, UnicodeDecodeError):
+        return None
+    return seq, kind, npc, text
+
 def find_bridge(sct):
-    # Fast path: original expected location.
+    # The screenshot from the live game verified that the addon renders at
+    # approximately (20,20), so test there first.
     raw = sample_packet_at(sct, X0, Y0)
     if decode(raw):
         return X0, Y0, raw
 
-    # Diagnostic search for the WSV2 grayscale header. This handles a WoW
-    # window that is offset from the primary screen origin.
-    step = PIXEL_SIZE
-    grab = np.array(sct.grab({"left": 0, "top": 0, "width": SEARCH_X, "height": SEARCH_Y}))
-    target = list(MAGIC)
-    for y in range(PIXEL_SIZE // 2, SEARCH_Y, step):
-        row = grab[y, :, :3]
-        gray = np.rint(row.mean(axis=1)).astype(np.uint8)
-        for x0 in range(PIXEL_SIZE // 2, SEARCH_X - 4 * PIXEL_SIZE, step):
-            vals = [int(gray[x0 + i * PIXEL_SIZE]) for i in range(4)]
-            if all(abs(vals[i] - target[i]) <= COLOR_TOLERANCE for i in range(4)):
-                left = x0 - PIXEL_SIZE // 2
-                top = y - PIXEL_SIZE // 2
+    # UI scaling/window offsets can move the strip. Search likely offsets on
+    # the same 5-pixel grid and only accept a packet that passes magic+checksum.
+    for top in range(0, SEARCH_Y, PIXEL_SIZE):
+        for left in range(0, SEARCH_X, PIXEL_SIZE):
+            try:
                 raw = sample_packet_at(sct, left, top)
-                if decode(raw):
-                    return left, top, raw
+            except Exception:
+                continue
+            if decode(raw):
+                return left, top, raw
     return None, None, None
-
-def decode(raw):
-    if raw[:4] != MAGIC: return None
-    seq, ln = raw[4], raw[5]
-    if ln > 96 or 6 + ln >= len(raw): return None
-    payload = raw[6:6+ln]
-    if sum(payload) % 256 != raw[6+ln]: return None
-    try:
-        decoded = payload.decode("utf-8")
-        kind, npc, text = decoded.split("\x1f", 2)
-    except (ValueError, UnicodeDecodeError):
-        return None
-    return seq, kind, npc, text
 
 def choose_voice(npc, available):
     pool = [v for v in PREFERRED if v in available] or list(available)
