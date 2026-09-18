@@ -13,6 +13,12 @@ except Exception:
     ImageDraw = None
 
 import runtime
+import voice_profiles
+
+# Runtime deliberately keeps the proven WSV6 transport/queue code untouched.
+# Swap only the voice registry so NPC profile metadata can select sex/race-aware
+# Kokoro voice pools.
+runtime.engine.VoiceRegistry = voice_profiles.VoiceRegistry
 
 VERSION = runtime.VERSION
 
