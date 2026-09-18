@@ -7,11 +7,15 @@ from pathlib import Path
 
 import mss
 import numpy as np
-import sounddevice as sd
 import soundfile as sf
 from kokoro_onnx import Kokoro
 
-VERSION = "0.4.1"
+if sys.platform == "win32":
+    import winsound
+else:
+    winsound = None
+
+VERSION = "0.4.2"
 MAGIC = b"WSV4"
 PIXEL_SIZE = 5
 X0, Y0 = 20, 20
@@ -159,8 +163,6 @@ def _scan_monitor(sct, mon):
         if max_start <= 0:
             continue
 
-        # Score every possible first-cell x coordinate in one captured image.
-        # This avoids the thousands of individual mss.grab calls used before.
         score = np.zeros((height, max_start), dtype=np.float32)
         for off, target in zip(offsets, HEADER_LEVELS):
             score += np.abs(gray[:, off:off + max_start] - target)
@@ -174,9 +176,6 @@ def _scan_monitor(sct, mon):
 
         for idx in idxs:
             y, x = np.unravel_index(int(idx), score.shape)
-            # y is a sampled row inside the horizontal strip. Try every
-            # plausible strip top around that row, then trust only a packet
-            # that passes magic, length and checksum validation.
             for delta_y in range(cell_size):
                 top_local = int(y) - delta_y
                 if top_local < 0 or top_local + cell_size > height:
@@ -225,18 +224,58 @@ def choose_voice(npc, available):
     return pool[int(hashlib.sha256(npc.encode("utf-8")).hexdigest(), 16) % len(pool)]
 
 
+def play_wav(path, blocking=False):
+    if winsound is None:
+        raise RuntimeError("Windows native audio backend is unavailable")
+    flags = winsound.SND_FILENAME | winsound.SND_NODEFAULT
+    if not blocking:
+        flags |= winsound.SND_ASYNC
+    winsound.PlaySound(str(path), flags)
+
+
+def synthesize_to_wav(kokoro, voice, text, wav):
+    audio, sr = kokoro.create(text, voice=voice, speed=1.0, lang="en-us")
+    audio = np.asarray(audio, dtype=np.float32).reshape(-1)
+    if audio.size == 0:
+        raise RuntimeError("Kokoro returned an empty audio buffer")
+    peak = float(np.max(np.abs(audio)))
+    if not np.isfinite(peak) or peak <= 0.00001:
+        raise RuntimeError(f"Kokoro returned silent/invalid audio (peak={peak})")
+    sf.write(wav, audio, sr, subtype="PCM_16")
+    return sr, audio.size, peak
+
+
+def audio_self_test(kokoro, available):
+    voice = choose_voice("Narrator", available)
+    wav = CACHE / "audio-self-test-v0.4.2.wav"
+    print("Audio self-test: generating speech...")
+    if not wav.exists():
+        sr, frames, peak = synthesize_to_wav(
+            kokoro,
+            voice,
+            "WoW Story Voice audio test. If you can hear this, local speech and Windows audio are working.",
+            wav,
+        )
+        print(f"Audio self-test generated: {frames} frames @ {sr} Hz, peak {peak:.3f}")
+    else:
+        data, sr = sf.read(wav, dtype="float32")
+        peak = float(np.max(np.abs(data))) if len(data) else 0.0
+        print(f"Audio self-test cache: {len(data)} frames @ {sr} Hz, peak {peak:.3f}")
+    print("Audio self-test: playing through Windows default output...")
+    play_wav(wav, blocking=True)
+    print("Audio self-test finished.")
+
+
 def speak(kokoro, available, kind, npc, text):
     voice = choose_voice(npc, available)
     key = hashlib.sha256((voice + "\0" + text).encode()).hexdigest()
     wav = CACHE / f"{key}.wav"
-    print(f"[{kind}] {npc}: {text}")
-    if wav.exists():
-        audio, sr = sf.read(wav, dtype="float32")
-    else:
-        audio, sr = kokoro.create(text, voice=voice, speed=1.0, lang="en-us")
-        sf.write(wav, audio, sr)
-    sd.stop()
-    sd.play(audio, sr)
+    print(f"Packet decoded: [{kind}] {npc}: {text}")
+    if not wav.exists():
+        sr, frames, peak = synthesize_to_wav(kokoro, voice, text, wav)
+        print(f"TTS generated: {frames} frames @ {sr} Hz, peak {peak:.3f}")
+    print(f"Playing: {wav}")
+    play_wav(wav, blocking=False)
 
 
 def main():
@@ -246,6 +285,13 @@ def main():
     print("Loading local TTS...")
     kokoro = Kokoro(str(MODEL), str(VOICES))
     available = kokoro.get_voices()
+    print(f"Kokoro ready. {len(available)} voices available.")
+
+    try:
+        audio_self_test(kokoro, available)
+    except Exception as e:
+        print(f"AUDIO SELF-TEST FAILED: {type(e).__name__}: {e}")
+
     print("Ready. Start WoW and use /wsv test.")
 
     last = None
@@ -283,10 +329,10 @@ def main():
                     try:
                         speak(kokoro, available, kind, npc, text)
                     except Exception as e:
-                        print(f"TTS error for packet {seq}: {e}")
+                        print(f"TTS/AUDIO error for packet {seq}: {type(e).__name__}: {e}")
 
             except Exception as e:
-                print(f"Bridge read error: {e}")
+                print(f"Bridge read error: {type(e).__name__}: {e}")
                 time.sleep(0.5)
 
             time.sleep(0.04)
@@ -297,6 +343,6 @@ if __name__ == "__main__":
         main()
     except Exception as e:
         print("\nWoW Story Voice stopped with an error:")
-        print(e)
+        print(f"{type(e).__name__}: {e}")
         input("\nPress Enter to close...")
         sys.exit(1)
