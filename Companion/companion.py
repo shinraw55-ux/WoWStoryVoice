@@ -1,9 +1,13 @@
 import ctypes
 import hashlib
+import json
 import os
+import queue
 import sys
+import threading
 import time
 import urllib.request
+from dataclasses import dataclass
 from pathlib import Path
 
 import mss
@@ -16,25 +20,24 @@ if sys.platform == "win32":
 else:
     winsound = None
 
-VERSION = "0.5.0"
-MAGIC = b"WSV5"
+VERSION = "0.6.0"
+MAGIC = b"WSV6"
 
-# The addon draws one RGB cell per 3 bits. Each byte therefore uses 3 cells.
-# Only full-off/full-on channel values are used so gamma/color management
-# cannot change the encoded bit identity.
+# WSV6 keeps the live-verified binary RGB pixel encoding from v0.5.0.
 CELLS_PER_BYTE = 3
-MAX_PAYLOAD = 96
-MAX_PACKET = 4 + 1 + 1 + MAX_PAYLOAD + 1
+MAX_PACKET = 103
+CHUNK_DATA_MAX = 91
 MAX_CELLS = MAX_PACKET * CELLS_PER_BYTE
 
-# Physical cell size after WoW UI scaling can vary, so detection checks several
-# plausible rendered sizes. The addon itself asks for 5 physical px.
 CELL_SIZES = (3, 4, 5, 6, 7)
 SEARCH_HEIGHT = 420
 SEARCH_WIDTH = 2200
 SEARCH_INTERVAL = 1.5
-DIAG_INTERVAL = 5.0
+DIAG_INTERVAL = 8.0
 BIT_THRESHOLD = 128
+ASSEMBLY_TIMEOUT = 15.0
+COMPLETED_ID_TTL = 30.0
+CONTENT_DEDUPE_TTL = 8.0
 
 MODEL_URL = "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.1/kokoro-v1.0.onnx"
 VOICES_URL = "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.1/voices-v1.0.bin"
@@ -65,6 +68,7 @@ CACHE = DATA / "cache"
 CACHE.mkdir(exist_ok=True)
 MODEL = Path(os.environ.get("WSV_MODEL", DATA / "kokoro-v1.0.onnx"))
 VOICES = Path(os.environ.get("WSV_VOICES", DATA / "voices-v1.0.bin"))
+VOICE_MAP = DATA / "voice-map.json"
 
 
 def download(url, dest, label):
@@ -98,20 +102,34 @@ def ensure_models():
     download(VOICES_URL, VOICES, "Kokoro voice library")
 
 
-def decode(raw):
-    if raw is None or len(raw) < 7 or raw[:4] != MAGIC:
+def _u16(raw, offset):
+    return (raw[offset] << 8) | raw[offset + 1]
+
+
+def decode_chunk(raw):
+    if raw is None or len(raw) < 12 or raw[:4] != MAGIC:
         return None
-    seq, ln = raw[4], raw[5]
-    if ln > MAX_PAYLOAD or 6 + ln >= len(raw):
+
+    msg_id = _u16(raw, 4)
+    chunk_index = _u16(raw, 6)
+    chunk_total = _u16(raw, 8)
+    chunk_len = raw[10]
+
+    if chunk_total < 1 or chunk_index < 1 or chunk_index > chunk_total:
         return None
-    payload = raw[6:6 + ln]
-    if sum(payload) % 256 != raw[6 + ln]:
+    if chunk_len > CHUNK_DATA_MAX:
         return None
-    try:
-        kind, npc, text = payload.decode("utf-8").split("\x1f", 2)
-    except (ValueError, UnicodeDecodeError):
+
+    data_end = 11 + chunk_len
+    checksum_index = data_end
+    if checksum_index >= len(raw):
         return None
-    return seq, kind, npc, text
+
+    body = raw[4:data_end]
+    if sum(body) % 256 != raw[checksum_index]:
+        return None
+
+    return msg_id, chunk_index, chunk_total, raw[11:data_end]
 
 
 def _decode_cell_bits(img, cell_index, cell_size):
@@ -125,8 +143,6 @@ def _decode_cell_bits(img, cell_index, cell_size):
     if patch.size == 0:
         raise ValueError("empty bridge cell")
 
-    # mss returns BGRA. Median over the interior makes edge interpolation
-    # irrelevant; convert BGR -> RGB before thresholding.
     med_bgr = np.median(patch, axis=(0, 1))
     r, g, b = float(med_bgr[2]), float(med_bgr[1]), float(med_bgr[0])
     return (
@@ -180,10 +196,7 @@ def _scan_monitor(sct, mon):
         "height": height,
     }))
 
-    # BGRA -> RGB and then binary channel values. We intentionally compare
-    # only black/fully-lit channel states, not intermediate grayscale.
     rgb_bits = (shot[:, :, [2, 1, 0]] >= BIT_THRESHOLD).astype(np.uint8)
-
     best_score = None
     best_hint = None
 
@@ -217,8 +230,6 @@ def _scan_monitor(sct, mon):
                     cell_size,
                 )
 
-            # The four-byte header contains 36 RGB bits. More than four
-            # mismatches is not a credible WSV5 candidate.
             if this_score > 4:
                 break
 
@@ -234,7 +245,7 @@ def _scan_monitor(sct, mon):
                 except Exception:
                     continue
 
-                if decode(raw):
+                if decode_chunk(raw):
                     return (left, top, cell_size), raw, (best_score, best_hint)
 
     return None, None, (best_score, best_hint)
@@ -255,7 +266,7 @@ def diagnostic_bridge(best):
     if not best or best[0] is None:
         return "no bridge-like header found"
     score, hint = best
-    return f"best WSV5 header score={score}/36 near {hint}"
+    return f"best WSV6 header score={score}/36 near {hint}"
 
 
 def minimize_console():
@@ -264,18 +275,9 @@ def minimize_console():
     try:
         hwnd = ctypes.windll.kernel32.GetConsoleWindow()
         if hwnd:
-            # SW_MINIMIZE = 6. This prevents the companion window from
-            # covering the pixels it is trying to screen-capture.
-            ctypes.windll.user32.ShowWindow(hwnd, 6)
+            ctypes.windll.user32.ShowWindow(hwnd, 6)  # SW_MINIMIZE
     except Exception as e:
         print(f"Console auto-minimize failed: {type(e).__name__}: {e}")
-
-
-def choose_voice(npc, available):
-    pool = [v for v in PREFERRED if v in available] or list(available)
-    if not pool:
-        raise RuntimeError("No Kokoro voices available")
-    return pool[int(hashlib.sha256(npc.encode("utf-8")).hexdigest(), 16) % len(pool)]
 
 
 def play_wav(path, blocking=False):
@@ -285,6 +287,11 @@ def play_wav(path, blocking=False):
     if not blocking:
         flags |= winsound.SND_ASYNC
     winsound.PlaySound(str(path), flags)
+
+
+def stop_audio():
+    if winsound is not None:
+        winsound.PlaySound(None, 0)
 
 
 def synthesize_to_wav(kokoro, voice, text, wav):
@@ -300,14 +307,15 @@ def synthesize_to_wav(kokoro, voice, text, wav):
 
 
 def audio_self_test(kokoro, available):
-    voice = choose_voice("Narrator", available)
+    registry = VoiceRegistry(available)
+    voice = registry.voice_for("", "Narrator")
     wav = CACHE / f"audio-self-test-v{VERSION}.wav"
     print("Audio self-test: generating speech...")
     if not wav.exists():
         sr, frames, peak = synthesize_to_wav(
             kokoro,
             voice,
-            "WoW Story Voice audio test. If you can hear this, local speech and Windows audio are working.",
+            "WoW Story Voice audio test. Local speech and Windows audio are working.",
             wav,
         )
         print(f"Audio self-test generated: {frames} frames @ {sr} Hz, peak {peak:.3f}")
@@ -321,21 +329,209 @@ def audio_self_test(kokoro, available):
     print("Audio self-test finished.")
 
 
-def speak(kokoro, available, kind, npc, text):
-    voice = choose_voice(npc, available)
-    key = hashlib.sha256((voice + "\0" + text).encode()).hexdigest()
-    wav = CACHE / f"{key}.wav"
-    print(f"Packet decoded: [{kind}] {npc}: {text}")
-    if not wav.exists():
-        sr, frames, peak = synthesize_to_wav(kokoro, voice, text, wav)
-        print(f"TTS generated: {frames} frames @ {sr} Hz, peak {peak:.3f}")
-    print(f"Playing: {wav}")
-    play_wav(wav, blocking=False)
+def _voice_identity(npc_guid, npc_name):
+    if npc_guid:
+        parts = npc_guid.split("-")
+        if len(parts) >= 6 and parts[0] in ("Creature", "Vehicle"):
+            return f"npc:{parts[5]}"
+        return f"guid:{npc_guid}"
+    return f"name:{(npc_name or 'Narrator').strip().casefold()}"
+
+
+class VoiceRegistry:
+    def __init__(self, available):
+        self.available = list(available)
+        self.pool = [v for v in PREFERRED if v in self.available] or self.available
+        if not self.pool:
+            raise RuntimeError("No Kokoro voices available")
+        self.mapping = {}
+        self._load()
+
+    def _load(self):
+        if not VOICE_MAP.exists():
+            return
+        try:
+            raw = json.loads(VOICE_MAP.read_text(encoding="utf-8"))
+            if isinstance(raw, dict):
+                self.mapping = {
+                    str(k): str(v)
+                    for k, v in raw.items()
+                    if isinstance(v, str) and v in self.available
+                }
+        except Exception as e:
+            print(f"Voice map load warning: {type(e).__name__}: {e}")
+
+    def _save(self):
+        tmp = VOICE_MAP.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(self.mapping, ensure_ascii=False, indent=2), encoding="utf-8")
+        tmp.replace(VOICE_MAP)
+
+    def voice_for(self, npc_guid, npc_name):
+        identity = _voice_identity(npc_guid, npc_name)
+        voice = self.mapping.get(identity)
+        if voice in self.available:
+            return voice
+
+        digest = hashlib.sha256(identity.encode("utf-8")).digest()
+        voice = self.pool[int.from_bytes(digest[:8], "big") % len(self.pool)]
+        self.mapping[identity] = voice
+        try:
+            self._save()
+        except Exception as e:
+            print(f"Voice map save warning: {type(e).__name__}: {e}")
+        return voice
+
+
+@dataclass(frozen=True)
+class SpeechJob:
+    epoch: int
+    kind: str
+    npc_guid: str
+    npc_name: str
+    text: str
+
+
+class SpeechController:
+    def __init__(self, kokoro, available):
+        self.kokoro = kokoro
+        self.registry = VoiceRegistry(available)
+        self.jobs = queue.Queue()
+        self.epoch = 0
+        self.lock = threading.Lock()
+        self.thread = threading.Thread(target=self._worker, name="WSV-Speech", daemon=True)
+        self.thread.start()
+
+    def enqueue(self, kind, npc_guid, npc_name, text):
+        with self.lock:
+            epoch = self.epoch
+        self.jobs.put(SpeechJob(epoch, kind, npc_guid, npc_name, text))
+        print(f"Speech queued: [{kind}] {npc_name} ({len(text.encode('utf-8'))} bytes)")
+
+    def stop_and_clear(self):
+        with self.lock:
+            self.epoch += 1
+        while True:
+            try:
+                self.jobs.get_nowait()
+                self.jobs.task_done()
+            except queue.Empty:
+                break
+        stop_audio()
+        print("Speech queue cleared.")
+
+    def _is_current(self, epoch):
+        with self.lock:
+            return epoch == self.epoch
+
+    def _worker(self):
+        while True:
+            job = self.jobs.get()
+            try:
+                if not self._is_current(job.epoch):
+                    continue
+
+                voice = self.registry.voice_for(job.npc_guid, job.npc_name)
+                key = hashlib.sha256((voice + "\0" + job.text).encode("utf-8")).hexdigest()
+                wav = CACHE / f"{key}.wav"
+
+                if not wav.exists():
+                    sr, frames, peak = synthesize_to_wav(self.kokoro, voice, job.text, wav)
+                    print(
+                        f"TTS generated: [{job.kind}] {job.npc_name}, "
+                        f"voice={voice}, {frames} frames @ {sr} Hz, peak {peak:.3f}"
+                    )
+
+                if not self._is_current(job.epoch):
+                    continue
+
+                print(f"Playing: [{job.kind}] {job.npc_name}, voice={voice}")
+                play_wav(wav, blocking=True)
+            except Exception as e:
+                print(f"Speech worker error: {type(e).__name__}: {e}")
+            finally:
+                self.jobs.task_done()
+
+
+class Reassembler:
+    def __init__(self):
+        self.messages = {}
+        self.completed_ids = {}
+        self.recent_content = {}
+
+    def _cleanup(self, now):
+        expired = [mid for mid, m in self.messages.items() if now - m["updated"] > ASSEMBLY_TIMEOUT]
+        for mid in expired:
+            missing = self.messages[mid]["total"] - len(self.messages[mid]["chunks"])
+            print(f"Chunk assembly timeout: message {mid}, missing {missing} chunk(s).")
+            del self.messages[mid]
+
+        self.completed_ids = {
+            mid: ts for mid, ts in self.completed_ids.items()
+            if now - ts <= COMPLETED_ID_TTL
+        }
+        self.recent_content = {
+            digest: ts for digest, ts in self.recent_content.items()
+            if now - ts <= CONTENT_DEDUPE_TTL
+        }
+
+    def accept(self, decoded):
+        if not decoded:
+            return None
+
+        now = time.time()
+        self._cleanup(now)
+        msg_id, chunk_index, chunk_total, data = decoded
+
+        if msg_id in self.completed_ids:
+            return None
+
+        state = self.messages.get(msg_id)
+        if state is None or state["total"] != chunk_total:
+            state = {
+                "total": chunk_total,
+                "chunks": {},
+                "created": now,
+                "updated": now,
+            }
+            self.messages[msg_id] = state
+
+        state["updated"] = now
+        state["chunks"][chunk_index] = bytes(data)
+
+        if len(state["chunks"]) != state["total"]:
+            return None
+
+        try:
+            payload = b"".join(state["chunks"][i] for i in range(1, state["total"] + 1))
+        except KeyError:
+            return None
+
+        del self.messages[msg_id]
+        self.completed_ids[msg_id] = now
+
+        digest = hashlib.sha256(payload).hexdigest()
+        previous = self.recent_content.get(digest)
+        self.recent_content[digest] = now
+        if previous is not None and now - previous <= CONTENT_DEDUPE_TTL:
+            print(f"Duplicate dialogue suppressed: message {msg_id}")
+            return None
+
+        try:
+            kind, npc_guid, npc_name, text = payload.decode("utf-8").split("\x1f", 3)
+        except (UnicodeDecodeError, ValueError):
+            print(f"Invalid reassembled payload: message {msg_id}")
+            return None
+
+        print(
+            f"Message reassembled: id={msg_id}, chunks={chunk_total}, "
+            f"kind={kind}, npc={npc_name}, text_bytes={len(text.encode('utf-8'))}"
+        )
+        return kind, npc_guid, npc_name, text
 
 
 def main():
     print(f"WoW Story Voice v{VERSION}")
-    print("Transport: WSV5 binary RGB")
+    print("Transport: WSV6 binary RGB + chunk reassembly")
     print("First launch downloads the local Kokoro model. No Python installation is required.")
     ensure_models()
 
@@ -349,38 +545,49 @@ def main():
     except Exception as e:
         print(f"AUDIO SELF-TEST FAILED: {type(e).__name__}: {e}")
 
+    speech = SpeechController(kokoro, available)
+    reassembler = Reassembler()
+
     print("Ready. The console will minimize so it cannot cover the WoW bridge.")
-    print("Use /wsv test in WoW. Restore this window later to read diagnostics.")
+    print("Use /wsv test in WoW. Use /wsv stop to stop and clear queued speech.")
     time.sleep(1.0)
     minimize_console()
 
-    last = None
     bridge_pos = None
+    bridge_failures = 0
     last_search = 0.0
     last_diag = 0.0
     best_diag = None
+    last_chunk_signature = None
 
     with mss.MSS() as sct:
         while True:
             try:
                 raw = None
+                decoded = None
 
                 if bridge_pos:
                     left, top, cell_size = bridge_pos
                     try:
                         raw = sample_packet_at(sct, left, top, cell_size)
+                        decoded = decode_chunk(raw)
                     except Exception:
-                        raw = None
+                        decoded = None
 
-                    if not decode(raw):
-                        bridge_pos = None
-                        raw = None
+                    if decoded:
+                        bridge_failures = 0
+                    else:
+                        bridge_failures += 1
+                        if bridge_failures >= 8:
+                            bridge_pos = None
+                            bridge_failures = 0
 
                 now = time.time()
                 if not bridge_pos and now - last_search >= SEARCH_INTERVAL:
                     last_search = now
                     bridge_pos, raw, best_diag = find_bridge(sct)
                     if bridge_pos:
+                        decoded = decode_chunk(raw)
                         print(
                             f"Bridge detected at screen position {bridge_pos[:2]}, "
                             f"cell size {bridge_pos[2]} px."
@@ -390,14 +597,17 @@ def main():
                     last_diag = now
                     print("Waiting for bridge.", diagnostic_bridge(best_diag))
 
-                msg = decode(raw) if raw else None
-                if msg and msg[0] != last:
-                    seq, kind, npc, text = msg
-                    last = seq
-                    try:
-                        speak(kokoro, available, kind, npc, text)
-                    except Exception as e:
-                        print(f"TTS/AUDIO error for packet {seq}: {type(e).__name__}: {e}")
+                if decoded:
+                    signature = decoded[:3] + (hashlib.sha1(decoded[3]).digest()[:4],)
+                    if signature != last_chunk_signature:
+                        last_chunk_signature = signature
+                        message = reassembler.accept(decoded)
+                        if message:
+                            kind, npc_guid, npc_name, text = message
+                            if kind == "control" and text.strip().casefold() == "stop":
+                                speech.stop_and_clear()
+                            elif text.strip():
+                                speech.enqueue(kind, npc_guid, npc_name, text)
 
             except Exception as e:
                 print(f"Bridge read error: {type(e).__name__}: {e}")
