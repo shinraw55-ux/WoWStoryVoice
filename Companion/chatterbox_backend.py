@@ -142,7 +142,7 @@ class ChatterboxBackend:
             except Exception:
                 pass
 
-    def generate(self, text, *, voice="", temperature=0.78, top_p=0.94, top_k=850):
+    def generate(self, text, *, voice="", temperature=0.78, top_p=0.94, top_k=850, speed=1.0, **_):
         source = self._activate_voice(voice)
         with self.torch.inference_mode():
             wav = self.model.generate(
