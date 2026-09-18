@@ -34,7 +34,8 @@ class CosyVoiceBackend:
         self.engine_name = ENGINE_NAME
         self.device = "CUDA/CPU (CosyVoice runtime)"
         self.cache_namespace = ENGINE_NAMESPACE
-        self.available = ["cosyvoice-zero-shot"]
+        from chatterbox_backend import profile_voice_ids
+        self.available = profile_voice_ids()
 
     def profile_voice_ids(self):
         return list(self.available)
@@ -44,7 +45,9 @@ class CosyVoiceBackend:
 
     def generate(self, text, *, voice="", speed=1.0, prompt_text="", prompt_wav=None, **_):
         if not prompt_wav:
-            raise RuntimeError("CosyVoice zero-shot requires a reference WAV")
+            from voice_reference import ensure_reference, REFERENCE_TEXT
+            prompt_wav = ensure_reference(self.data_dir, voice)
+            prompt_text = REFERENCE_TEXT
         chunks = self.model.inference_zero_shot(str(text), str(prompt_text or ""), str(prompt_wav), stream=False)
         arrays = []
         sample_rate = int(getattr(self.model, "sample_rate", 22050))
