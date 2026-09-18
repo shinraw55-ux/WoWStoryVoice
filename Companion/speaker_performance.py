@@ -121,11 +121,11 @@ def shape_delivery(profile, kind, base_speed, base_pause, intensity=DEFAULT_EXPR
 
 
 def make_speaker_controller(base_cls, voice_profiles_module, settings):
-    """Add a short narrator cue when the speaking NPC changes.
+    """Optionally add a short narrator cue when the speaking NPC changes.
 
-    The cue is queued as a normal speech job immediately before the NPC line,
-    so it stays synchronized with the actual playback queue. Consecutive lines
-    from the same NPC are not repeatedly announced.
+    The in-world visual indicator is now the default speaker-identification
+    mechanism. Audible name cues remain available as an opt-in accessibility
+    feature because they necessarily add playback latency before the NPC line.
     """
 
     class SpeakerAwareController(base_cls):
@@ -151,10 +151,8 @@ def make_speaker_controller(base_cls, voice_profiles_module, settings):
                     identity,
                     name,
                     now=now,
-                    enabled=bool(settings.get("announce_speaker", True)),
+                    enabled=bool(settings.get("announce_speaker", False)),
                 ):
-                    # The special kind is rendered quietly and neutrally by
-                    # shape_delivery(). The actual NPC line remains untouched.
                     super().enqueue("speaker_cue", "", "Narrator", f"{name}.")
 
                 self._last_speaker_identity = identity
@@ -180,11 +178,14 @@ def make_speaker_controller(base_cls, voice_profiles_module, settings):
 
 
 def configure_runtime(runtime_module, voice_profiles_module):
-    """Install the speaker/engagement layer once without touching WSV6."""
+    """Install the speaker/engagement layer once without changing WSV6 framing."""
     if getattr(runtime_module, "_speaker_performance_configured", False):
         return
 
-    runtime_module.SETTINGS.setdefault("announce_speaker", True)
+    # The in-world indicator makes spoken NPC-name pre-roll unnecessary by
+    # default, and removing it avoids an extra TTS generation + playback before
+    # every new speaker. Users can still opt back in from the GUI.
+    runtime_module.SETTINGS.setdefault("announce_speaker", False)
     runtime_module.SETTINGS.setdefault("expressiveness", DEFAULT_EXPRESSIVENESS)
     runtime_module.SETTINGS["expressiveness"] = normalized_expressiveness(
         runtime_module.SETTINGS.get("expressiveness")
