@@ -1,6 +1,7 @@
 ## Interface: 120100
 ## Title: WoW Story Voice
-## Notes: Local AI voices for quest and gossip dialogue
+## Notes: Local AI voices for quest, gossip and NPC dialogue
 ## Author: WoWStoryVoice
-## Version: 0.6.0
+## Version: 0.7.0
+## SavedVariables: WoWStoryVoiceDB
 Core.lua
