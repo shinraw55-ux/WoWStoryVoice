@@ -2,6 +2,7 @@ local addonName = ...
 local WSV = CreateFrame("Frame")
 local pixels = {}
 local seq = 0
+local VERSION = "0.4.1"
 local MAGIC = "WSV4"
 local MAX_PAYLOAD = 96
 local PIXEL_SIZE = 5
@@ -39,9 +40,6 @@ local function ensurePixels(n)
   end
 end
 
--- Robust transport: each byte is represented by two 4-bit grayscale cells.
--- 16 levels are 17 luminance values apart, giving the screen capture ample
--- tolerance instead of requiring an exact 0..255 grayscale byte.
 local function emitByteCells(bytes)
   local cells = {}
   for i = 1, #bytes do
@@ -98,12 +96,12 @@ SlashCmdList.WOWSTORYVOICE = function(msg)
   msg = string.lower(msg or "")
   if msg == "test" then
     emit("test", "Narrator", "WoW Story Voice is connected and ready.")
-    print("|cff66ff66WoW Story Voice:|r test packet sent (v0.4 transport).")
+    print("|cff66ff66WoW Story Voice:|r test packet sent (v" .. VERSION .. ", WSV4 transport).")
   elseif msg == "hide" then
     for _, p in ipairs(pixels) do p:Hide() end
   elseif msg == "show" then
     emit("test", "Narrator", "Bridge visible.")
   else
-    print("|cff66ff66WoW Story Voice|r: /wsv test, /wsv show, /wsv hide")
+    print("|cff66ff66WoW Story Voice " .. VERSION .. "|r: /wsv test, /wsv show, /wsv hide")
   end
 end
