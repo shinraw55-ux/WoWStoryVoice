@@ -127,11 +127,11 @@ class CompanionGUI:
         ).pack(fill="x", pady=(2, 8))
 
         self.speaker_announce_var = tk.BooleanVar(
-            value=bool(runtime.SETTINGS.get("announce_speaker", True))
+            value=bool(runtime.SETTINGS.get("spoken_speaker_name", False))
         )
         ttk.Checkbutton(
             settings,
-            text="Announce NPC name when the speaker changes",
+            text="Speak NPC name before dialogue (adds delay)",
             variable=self.speaker_announce_var,
             command=self.speaker_setting_changed,
         ).pack(anchor="w")
@@ -172,8 +172,10 @@ class CompanionGUI:
         self.speaker_var.set(f"Speaker: {speaker}")
         speech = "speaking" if snap["speaking"] else "idle"
         delivery = snap.get("last_delivery", "neutral")
+        latency = snap.get("last_latency_ms")
+        latency_text = f" · start {latency} ms" if latency is not None else ""
         self.speech_var.set(
-            f"Speech: {speech} · emotion {delivery} · queue {snap['queue_size']} · last: {snap['last_message']}"
+            f"Speech: {speech} · emotion {delivery} · queue {snap['queue_size']}{latency_text} · last: {snap['last_message']}"
         )
         self.update_var.set(f"Update: {snap['update_status']}")
         self.listen_button.configure(text="Pause listening" if snap["listening"] else "Resume listening")
@@ -201,7 +203,7 @@ class CompanionGUI:
         runtime.save_settings(runtime.SETTINGS)
 
     def speaker_setting_changed(self):
-        runtime.SETTINGS["announce_speaker"] = bool(self.speaker_announce_var.get())
+        runtime.SETTINGS["spoken_speaker_name"] = bool(self.speaker_announce_var.get())
         runtime.save_settings(runtime.SETTINGS)
 
     def startup_changed(self):
