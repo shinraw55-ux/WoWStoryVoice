@@ -11,7 +11,7 @@ import sounddevice as sd
 import soundfile as sf
 from kokoro_onnx import Kokoro
 
-VERSION = "0.3.5"
+VERSION = "0.3.6"
 MAGIC = b"WSV2"
 PIXEL_SIZE = 5
 X0, Y0 = 20, 20
@@ -87,7 +87,7 @@ def find_bridge(sct):
         gray = np.rint(row.mean(axis=1)).astype(np.uint8)
         for x0 in range(PIXEL_SIZE // 2, SEARCH_X - 4 * PIXEL_SIZE, step):
             vals = [int(gray[x0 + i * PIXEL_SIZE]) for i in range(4)]
-            if all(abs(vals[i] - target[i]) <= 2 for i in range(4)):
+            if all(abs(vals[i] - target[i]) <= COLOR_TOLERANCE for i in range(4)):
                 left = x0 - PIXEL_SIZE // 2
                 top = y - PIXEL_SIZE // 2
                 raw = sample_packet_at(sct, left, top)
