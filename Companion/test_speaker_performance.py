@@ -40,7 +40,7 @@ class DummyBaseController:
 
 class SpeakerPerformanceTests(unittest.TestCase):
     def test_new_speaker_is_announced_but_repeat_is_not(self):
-        settings = {"announce_speaker": True}
+        settings = {"spoken_speaker_name": True}
         Controller = speaker_performance.make_speaker_controller(
             DummyBaseController, voice_profiles, settings
         )
@@ -56,7 +56,7 @@ class SpeakerPerformanceTests(unittest.TestCase):
         self.assertEqual(c.state.data["current_speaker"], "Hogger")
 
     def test_different_speaker_gets_new_cue(self):
-        settings = {"announce_speaker": True}
+        settings = {"spoken_speaker_name": True}
         Controller = speaker_performance.make_speaker_controller(
             DummyBaseController, voice_profiles, settings
         )
@@ -67,7 +67,7 @@ class SpeakerPerformanceTests(unittest.TestCase):
         self.assertEqual([item[3] for item in cues], ["NPC One.", "NPC Two."])
 
     def test_announcement_can_be_disabled(self):
-        settings = {"announce_speaker": False}
+        settings = {"spoken_speaker_name": False}
         Controller = speaker_performance.make_speaker_controller(
             DummyBaseController, voice_profiles, settings
         )
