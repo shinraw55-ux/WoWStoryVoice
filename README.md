@@ -3,47 +3,58 @@
 WoW Story Voice gives World of Warcraft quest, gossip and NPC dialogue local AI-generated voices.
 
 ## Components
-- `WoWStoryVoice/`: WoW addon. Captures supported dialogue and exposes the WSV pixel bridge.
-- `Companion/`: Windows companion. Reads the bridge, reassembles dialogue, queues speech and generates voices locally with Kokoro ONNX.
-- GitHub Actions builds a standalone Windows companion folder with PyInstaller.
+- `WoWStoryVoice/`: WoW addon. Captures supported dialogue and exposes the WSV6 pixel bridge.
+- `Companion/companion.py`: proven transport/TTS engine used by the GUI runtime.
+- `Companion/runtime.py`: v0.8 desktop runtime, speech control, update/version checks and addon installation helper.
+- `Companion/app.py`: Windows GUI and system-tray application.
+- `installer/`: Inno Setup definition for the Windows installer.
 
-## Current status — v0.7.0
-The end-to-end chain was live-verified in game on v0.5.0. v0.6.0 added full dialogue chunking, queued playback and persistent NPC voices. v0.7.0 continues with phases 5–7 without changing the WSV6 transport.
+## Current status — v0.8.0
+The end-to-end chain was live-verified in game on v0.5.0. v0.6.0 added full dialogue chunking, queued playback and persistent NPC voices. v0.7.0 added pacing, broader dialogue capture and protection against subtitle/cinematic-marked Blizzard lines. v0.8.0 implements phases 8–10 without changing the WSV6 transport.
 
 ### Implemented phases
 1. **Stable communication** — binary RGB bridge with transient-read tolerance.
-2. **Full dialogue transport** — WSV6 chunks long UTF-8 dialogue into numbered packets, repeats them for loss recovery and reassembles before decoding.
-3. **Speech queue** — capture continues while TTS runs on a worker thread; dialogue plays sequentially. `/wsv stop` stops audio and clears the queue.
-4. **Persistent NPC voices** — NPCs receive a deterministic voice stored in `%LOCALAPPDATA%\WoWStoryVoice\voice-map.json`. Creature GUIDs are normalized to NPC template IDs so respawns keep the same voice.
-5. **Pacing / prosody pass** — WoW markup is removed before speech, long dialogue is split at sentence boundaries, and punctuation/kind apply conservative speed and pause adjustments instead of feeding huge blocks to Kokoro.
-6. **Expanded WoW dialogue coverage** — captures quest detail, quest progress, quest reward, multi-quest greeting, gossip, and ambient NPC say/yell/whisper/party dialogue.
-7. **Original Blizzard presentation protection** — ambient NPC chat lines marked by Blizzard as subtitles or letterbox/cinematic text are skipped by default so local TTS does not deliberately speak over those lines. This can be changed with `/wsv blizzard off`.
+2. **Full dialogue transport** — WSV6 chunks long UTF-8 dialogue into numbered packets and reassembles it before speech.
+3. **Speech queue** — dialogue plays sequentially and `/wsv stop` clears current/queued speech.
+4. **Persistent NPC voices** — stable NPC voice mapping stored under `%LOCALAPPDATA%\WoWStoryVoice`.
+5. **Pacing / prosody** — WoW markup cleanup, sentence segmentation and conservative pacing changes.
+6. **Expanded dialogue coverage** — quest detail/progress/reward/greeting, gossip and ambient NPC say/yell/whisper/party.
+7. **Blizzard presentation protection** — subtitle/cinematic-marked ambient NPC lines are skipped by default.
+8. **Companion UX** — Windows GUI, bridge/addon/speech status, recent log view, pause listening, stop speech, local voice test, volume, system tray, optional Windows startup and update checking.
+9. **Addon UX** — `/wsv config` opens an in-game options panel for quest, gossip, ambient NPC and Blizzard-line behavior. The existing slash commands remain available.
+10. **Installation/update** — the build produces a Windows installer, companion/addon version heartbeat detects mismatches, the GUI can install/update the bundled addon, and `release.json` provides a lightweight update check.
 
-Generated WAV files are cached under `%LOCALAPPDATA%\WoWStoryVoice\cache`.
+Generated WAV files and logs are stored under `%LOCALAPPDATA%\WoWStoryVoice`.
 
-## Install / test
-1. Install or replace the `WoWStoryVoice` addon folder in `World of Warcraft/_retail_/Interface/AddOns/`.
-2. Download the latest `WoWStoryVoice-Windows` artifact from GitHub Actions and extract the whole companion folder.
-3. Start `WoWStoryVoice.exe` from that folder.
-4. In WoW run `/reload` after replacing addon files, then run `/wsv test`.
-5. `/wsv stop` stops current playback and clears queued speech.
-6. `/wsv status` shows addon settings.
+## Install
+The Windows artifact contains both the portable folder and `WoWStoryVoice-Setup-v0.8.0.exe`.
+
+1. Run the setup EXE, or extract the portable companion folder.
+2. Start WoW Story Voice.
+3. Use **Install/update addon** in the Windows app. It auto-detects the standard Retail WoW path; if WoW is elsewhere, select `_retail_` or the `AddOns` folder.
+4. If WoW is already running, use `/reload`.
+5. Run `/wsv test`.
+
+The Windows app shows the detected addon version. If addon and companion versions differ, it displays a version-mismatch warning.
 
 ### Addon commands
+- `/wsv config` — open the in-game options panel.
 - `/wsv test`
 - `/wsv stop`
 - `/wsv status`
-- `/wsv blizzard on|off` — skip Blizzard subtitle/cinematic-marked NPC lines when ON (default).
-- `/wsv monsters on|off` — enable/disable ambient NPC say/yell/whisper/party capture.
+- `/wsv quests on|off`
+- `/wsv gossip on|off`
+- `/wsv blizzard on|off`
+- `/wsv monsters on|off`
 - `/wsv show` / `/wsv hide`
 
 ## Transport notes
-v0.7.0 intentionally keeps WSV6 unchanged. The packet contains a 16-bit message ID, chunk index/total, data length and checksum. Raw UTF-8 bytes are chunked and decoded only after complete reassembly.
+v0.8.0 intentionally keeps WSV6 unchanged. A small periodic `hello|<version>` control message lets the companion verify the addon version without changing the dialogue packet format.
 
-## Regression checks
-The Windows build runs protocol tests before packaging. Tests cover multi-chunk UTF-8 reassembly, checksum rejection, message-ID dedupe, cross-source dialogue dedupe, stable Creature/NPC voice identity, WoW markup cleanup, bounded sentence segmentation and conservative prosody values.
+## Regression/build checks
+The Windows build runs protocol tests plus v0.8 package/version synchronization tests, compiles all Python modules, builds the GUI companion as a PyInstaller `--windowed --onedir` app, packages the addon, builds the Inno Setup installer and emits SHA-256 checksums for the companion EXE and installer.
 
 ## Verification state
 - v0.5.0 end-to-end transport/audio: live-verified in game.
-- v0.6.0/v0.7.0 code: CI/regression-tested when the corresponding build is green.
-- New v0.7.0 dialogue events and subtitle-skip behavior still require live in-game verification before being called fully verified.
+- v0.6.0/v0.7.0/v0.8.0 code: CI/regression-tested when the corresponding build is green.
+- New v0.8 GUI, in-game options panel, heartbeat/version warning, addon installer helper and Windows installer still require live testing on the target Windows/WoW installation before being called fully verified.
