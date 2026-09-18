@@ -58,7 +58,7 @@ jobs:
       - name: Build GUI companion folder
         shell: pwsh
         run: |
-          pyinstaller --noconfirm --clean --onedir --noupx --windowed --name WoWStoryVoice --hidden-import chatterbox.tts_turbo --collect-all chatterbox --collect-all perth --collect-all s3tokenizer --collect-all conformer --collect-all kokoro_onnx --collect-all onnxruntime --collect-all espeakng_loader --collect-all pystray Companion/app.py
+          pyinstaller --noconfirm --clean --onedir --noupx --windowed --name WoWStoryVoice --hidden-import chatterbox.tts_turbo --collect-all chatterbox --collect-all perth --collect-all s3tokenizer --collect-all conformer --collect-all espeakng_loader --collect-all pystray Companion/app.py
       - name: Package addon
         shell: pwsh
         run: |
