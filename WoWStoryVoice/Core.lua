@@ -5,8 +5,8 @@ local pixels = {}
 local VERSION = "0.8.0"
 local MAGIC = "WSV6"
 
--- Keep the live-verified WSV6 transport unchanged. v0.8 only adds UX,
--- configuration and a lightweight version heartbeat on top of it.
+-- Keep the live-verified WSV6 transport unchanged. NPC voice metadata is
+-- carried inside the existing npcGuid field, so the packet layer is untouched.
 local CELL_PX = 5
 local X_PX = 20
 local Y_PX = 20
@@ -24,6 +24,7 @@ local currentPacket = nil
 local heartbeatElapsed = HEARTBEAT_SEC
 local optionsFrame = nil
 local optionChecks = {}
+local npcProfileCache = {}
 
 WoWStoryVoiceDB = WoWStoryVoiceDB or {}
 if WoWStoryVoiceDB.skipBlizzardVoiced == nil then WoWStoryVoiceDB.skipBlizzardVoiced = true end
@@ -181,11 +182,70 @@ WSV:SetScript("OnUpdate", function(_, elapsed)
   emitBytes(currentPacket)
 end)
 
+local function sanitizeProfileValue(value)
+  local text = tostring(value or "")
+  return (string.gsub(text, "[^%w_%-]", "_"))
+end
+
+local function guidTemplateKey(guid)
+  if type(guid) ~= "string" or guid == "" then return "" end
+  local parts = {}
+  for part in string.gmatch(guid, "([^-]+)") do
+    parts[#parts + 1] = part
+    if #parts >= 6 then break end
+  end
+  if #parts >= 6 and (parts[1] == "Creature" or parts[1] == "Vehicle") then
+    return parts[1] .. ":" .. parts[6]
+  end
+  return guid
+end
+
+local function profileSuffixForUnit(unit)
+  local sex = tonumber(UnitSex(unit)) or 1
+  local _, englishRace = UnitRace(unit)
+  local _, creatureTypeID = UnitCreatureType(unit)
+  return "#wsv#sex=" .. tostring(sex)
+    .. ";race=" .. sanitizeProfileValue(englishRace)
+    .. ";ctype=" .. sanitizeProfileValue(creatureTypeID)
+end
+
+local function rememberProfile(guid, suffix)
+  if type(guid) ~= "string" or guid == "" or type(suffix) ~= "string" then return end
+  npcProfileCache[guid] = suffix
+  local templateKey = guidTemplateKey(guid)
+  if templateKey ~= "" then npcProfileCache[templateKey] = suffix end
+end
+
+local function profiledGuidForUnit(unit)
+  local guid = UnitGUID(unit) or ""
+  if guid == "" then return "" end
+  local suffix = profileSuffixForUnit(unit)
+  rememberProfile(guid, suffix)
+  return guid .. suffix
+end
+
+local function profiledGuidForSender(guid)
+  if type(guid) ~= "string" or guid == "" then return "" end
+
+  -- Ambient chat only gives us a GUID, not a unit token. If the speaker is a
+  -- currently addressable NPC/target/focus/mouseover, learn its live profile.
+  local units = { "npc", "target", "focus", "mouseover" }
+  for _, unit in ipairs(units) do
+    if UnitGUID(unit) == guid then
+      return profiledGuidForUnit(unit)
+    end
+  end
+
+  local suffix = npcProfileCache[guid] or npcProfileCache[guidTemplateKey(guid)]
+  if suffix then return guid .. suffix end
+  return guid
+end
+
 local function npcInfo()
   local unit = nil
   if UnitName("npc") then unit = "npc" elseif UnitName("target") then unit = "target" end
   if not unit then return "", "Narrator" end
-  return UnitGUID(unit) or "", UnitName(unit) or "Narrator"
+  return profiledGuidForUnit(unit), UnitName(unit) or "Narrator"
 end
 
 local function capture(kind, text)
@@ -205,6 +265,7 @@ local function captureMonsterEvent(event, ...)
   if type(name) ~= "string" or name == "" then name = "Unknown" end
   if type(guid) ~= "string" then guid = "" end
   if WoWStoryVoiceDB.skipBlizzardVoiced and (isSubtitle == true or hideSenderInLetterbox == true) then return end
+  guid = profiledGuidForSender(guid)
   enqueueMessage(MONSTER_EVENT_KIND[event] or "monster", guid, name, text, false, false)
 end
 
