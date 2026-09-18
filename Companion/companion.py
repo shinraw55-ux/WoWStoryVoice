@@ -11,11 +11,13 @@ import sounddevice as sd
 import soundfile as sf
 from kokoro_onnx import Kokoro
 
-VERSION = "0.3.4"
+VERSION = "0.3.5"
 MAGIC = b"WSV2"
 PIXEL_SIZE = 5
 X0, Y0 = 20, 20
 MAX_PACKET = 103
+SEARCH_X = 1400
+SEARCH_Y = 300
 
 MODEL_URL = "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.1/kokoro-v1.0.onnx"
 VOICES_URL = "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.1/voices-v1.0.bin"
@@ -59,15 +61,39 @@ def ensure_models():
     download(MODEL_URL, MODEL, "Kokoro voice model")
     download(VOICES_URL, VOICES, "Kokoro voice library")
 
-def sample_packet(sct):
+def sample_packet_at(sct, left, top):
     width = MAX_PACKET * PIXEL_SIZE
-    img = np.array(sct.grab({"left": X0, "top": Y0, "width": width, "height": PIXEL_SIZE}))
+    img = np.array(sct.grab({"left": left, "top": top, "width": width, "height": PIXEL_SIZE}))
     out = bytearray()
     for i in range(MAX_PACKET):
         x = i * PIXEL_SIZE + PIXEL_SIZE // 2
         b, g, r = img[PIXEL_SIZE // 2, x, :3]
         out.append(int(round((int(r)+int(g)+int(b))/3)))
     return bytes(out)
+
+def find_bridge(sct):
+    # Fast path: original expected location.
+    raw = sample_packet_at(sct, X0, Y0)
+    if decode(raw):
+        return X0, Y0, raw
+
+    # Diagnostic search for the WSV2 grayscale header. This handles a WoW
+    # window that is offset from the primary screen origin.
+    step = PIXEL_SIZE
+    grab = np.array(sct.grab({"left": 0, "top": 0, "width": SEARCH_X, "height": SEARCH_Y}))
+    target = list(MAGIC)
+    for y in range(PIXEL_SIZE // 2, SEARCH_Y, step):
+        row = grab[y, :, :3]
+        gray = np.rint(row.mean(axis=1)).astype(np.uint8)
+        for x0 in range(PIXEL_SIZE // 2, SEARCH_X - 4 * PIXEL_SIZE, step):
+            vals = [int(gray[x0 + i * PIXEL_SIZE]) for i in range(4)]
+            if all(abs(vals[i] - target[i]) <= 2 for i in range(4)):
+                left = x0 - PIXEL_SIZE // 2
+                top = y - PIXEL_SIZE // 2
+                raw = sample_packet_at(sct, left, top)
+                if decode(raw):
+                    return left, top, raw
+    return None, None, None
 
 def decode(raw):
     if raw[:4] != MAGIC: return None
@@ -109,10 +135,23 @@ def main():
     available = kokoro.get_voices()
     print("Ready. Start WoW and use /wsv test.")
     last = None
+    bridge_pos = None
+    last_search = 0.0
     with mss.mss() as sct:
         while True:
             try:
-                msg = decode(sample_packet(sct))
+                raw = None
+                if bridge_pos:
+                    raw = sample_packet_at(sct, *bridge_pos)
+                    if not decode(raw):
+                        bridge_pos = None
+                if not bridge_pos and time.time() - last_search >= 1.0:
+                    last_search = time.time()
+                    bx, by, raw = find_bridge(sct)
+                    if raw:
+                        bridge_pos = (bx, by)
+                        print(f"Bridge detected at screen position {bridge_pos}.")
+                msg = decode(raw) if raw else None
                 if msg and msg[0] != last:
                     seq, kind, npc, text = msg
                     last = seq
