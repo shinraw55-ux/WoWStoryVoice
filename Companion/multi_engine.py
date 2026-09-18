@@ -21,6 +21,8 @@ def configure_runtime(runtime_module):
     runtime_module.TTS_ENGINE_NAME = spec.label
     runtime_module.CACHE = runtime_module.DATA / ("cache-" + selected)
     runtime_module.CACHE.mkdir(parents=True, exist_ok=True)
+    if selected == tts_registry.ENGINE_CHATTERBOX:
+        runtime_module.FAST_TTS_SEGMENT_CHARS = 90
 
     def initialize_tts():
         key = tts_registry.normalize_engine(runtime_module.SETTINGS.get("tts_engine"))
@@ -35,7 +37,15 @@ def configure_runtime(runtime_module):
         return backend, available
 
     def synthesize_to_wav(tts, voice, text, wav, speed=1.0, volume=1.0):
-        audio, sr, source = tts.generate(str(text), voice=voice, speed=speed)
+        rendered_text = str(text)
+        if getattr(tts, "engine_name", "") == "Chatterbox Turbo":
+            try:
+                import chatterbox_backend
+                profile = runtime_module.emotion_profiles.infer_emotion("dialogue", rendered_text, "")
+                rendered_text = chatterbox_backend.decorate_text(rendered_text, profile.name, profile.score)
+            except Exception as e:
+                print(f"Chatterbox emotion decoration warning: {type(e).__name__}: {e}")
+        audio, sr, source = tts.generate(rendered_text, voice=voice, speed=speed)
         audio = np.asarray(audio, dtype=np.float32).reshape(-1)
         if audio.size == 0:
             raise RuntimeError(f"{tts.engine_name} returned empty audio")
