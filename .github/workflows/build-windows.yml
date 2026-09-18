@@ -6,6 +6,7 @@ on:
     branches: [ main ]
     paths:
       - "Companion/**"
+      - "WoWStoryVoice/**"
       - ".github/workflows/build-windows.yml"
 
 permissions:
