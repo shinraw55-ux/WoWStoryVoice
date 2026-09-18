@@ -1,0 +1,5 @@
+mss
+numpy
+sounddevice
+soundfile
+kokoro-onnx
