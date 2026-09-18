@@ -14,6 +14,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: wow-story-voice-windows-main
+  cancel-in-progress: true
+
 jobs:
   build:
     runs-on: windows-latest
