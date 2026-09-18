@@ -16,13 +16,12 @@ except Exception:
 import runtime
 import voice_profiles
 import beta_hardening
-import chatterbox_patch
+import multi_engine
+import tts_registry
 import speaker_performance
 
-# Keep the proven WSV6 transport untouched while swapping the speech backend to
-# Chatterbox Turbo and layering profile-aware voices, speaker clarity,
-# expressive delivery and beta hardening around it.
-chatterbox_patch.configure_runtime(runtime)
+# Keep WSV6 transport untouched; TTS is selected independently.
+multi_engine.configure_runtime(runtime)
 runtime.engine.VoiceRegistry = voice_profiles.VoiceRegistry
 speaker_performance.configure_runtime(runtime, voice_profiles)
 runtime.synthesize_to_wav = beta_hardening.make_atomic_synthesizer(runtime.synthesize_to_wav)
@@ -71,7 +70,7 @@ class CompanionGUI:
         self.listening_event = listening_event
         self.last_log_text = ""
 
-        root.title(f"WoW Story Voice v{VERSION} · Chatterbox Turbo")
+        root.title(f"WoW Story Voice v{VERSION}")
         root.geometry("700x675")
         root.minsize(620, 575)
         root.protocol("WM_DELETE_WINDOW", self.on_close)
@@ -79,13 +78,13 @@ class CompanionGUI:
         main = ttk.Frame(root, padding=14)
         main.pack(fill="both", expand=True)
         ttk.Label(main, text="WoW Story Voice", font=("Segoe UI", 16, "bold")).pack(anchor="w")
-        ttk.Label(main, text=f"Companion v{VERSION} · Chatterbox Turbo · WSV6 transport").pack(anchor="w", pady=(0, 12))
+        ttk.Label(main, text=f"Companion v{VERSION} · Multi-engine TTS · WSV6 transport").pack(anchor="w", pady=(0, 12))
 
         status = ttk.LabelFrame(main, text="Status", padding=10)
         status.pack(fill="x")
         self.bridge_var = tk.StringVar(value="Bridge: searching")
         self.addon_var = tk.StringVar(value="Addon: unknown")
-        self.engine_var = tk.StringVar(value="TTS: Chatterbox Turbo")
+        self.engine_var = tk.StringVar(value="TTS: loading")
         self.speaker_var = tk.StringVar(value="Speaker: —")
         self.speech_var = tk.StringVar(value="Speech: idle")
         self.update_var = tk.StringVar(value="Update: not checked")
@@ -105,6 +104,13 @@ class CompanionGUI:
 
         settings = ttk.LabelFrame(main, text="Companion settings", padding=10)
         settings.pack(fill="x", pady=(0, 10))
+        engine_row = ttk.Frame(settings)
+        engine_row.pack(fill="x", pady=(0, 8))
+        ttk.Label(engine_row, text="Voice engine").pack(side="left")
+        self.engine_choice = tk.StringVar(value=runtime.SETTINGS.get("tts_engine", "kokoro"))
+        self.engine_combo = ttk.Combobox(engine_row, state="readonly", width=24, textvariable=self.engine_choice, values=list(tts_registry.SPECS.keys()))
+        self.engine_combo.pack(side="right")
+        self.engine_combo.bind("<<ComboboxSelected>>", self.engine_changed)
         row = ttk.Frame(settings)
         row.pack(fill="x")
         ttk.Label(row, text="Voice volume").pack(side="left")
@@ -173,7 +179,7 @@ class CompanionGUI:
             self.addon_var.set(f"Addon: v{av} · compatible")
         else:
             self.addon_var.set(f"Addon: {av}")
-        tts_name = snap.get("tts_engine", getattr(runtime, "TTS_ENGINE_NAME", "Chatterbox Turbo"))
+        tts_name = snap.get("tts_engine", getattr(runtime, "TTS_ENGINE_NAME", "TTS"))
         tts_device = snap.get("tts_device", "")
         self.engine_var.set(f"TTS: {tts_name}" + (f" · {tts_device}" if tts_device else ""))
         speaker = snap.get("current_speaker", "—")
@@ -197,6 +203,11 @@ class CompanionGUI:
             self.log_text.see("end")
             self.log_text.configure(state="disabled")
         self.root.after(500, self.refresh)
+
+    def engine_changed(self, _=None):
+        key = multi_engine.set_selected_engine(runtime, self.engine_choice.get())
+        label = tts_registry.SPECS[key].label
+        messagebox.showinfo("WoW Story Voice", f"Voice engine set to {label}. Restart the companion to load it.")
 
     def volume_changed(self, _=None):
         value = max(0, min(100, int(round(self.volume_var.get()))))
@@ -235,7 +246,7 @@ class CompanionGUI:
         self.speech.stop_and_clear()
 
     def test_voice(self):
-        self.speech.enqueue("test", "", "Narrator", "WoW Story Voice Chatterbox Turbo voice test. Audio is working.")
+        self.speech.enqueue("test", "", "Narrator", "WoW Story Voice voice test. Audio is working.")
 
     def install_addon(self):
         try:
@@ -282,11 +293,11 @@ def main():
     root = tk.Tk()
     root.withdraw()
     splash = tk.Toplevel(root)
-    splash.title("WoW Story Voice · Chatterbox Turbo")
+    splash.title("WoW Story Voice")
     splash.geometry("500x145")
     splash.resizable(False, False)
     ttk.Label(splash, text=f"WoW Story Voice v{VERSION}", font=("Segoe UI", 14, "bold")).pack(pady=(18, 6))
-    ttk.Label(splash, text="Loading Chatterbox Turbo… First launch downloads the model.").pack()
+    ttk.Label(splash, text=f"Loading {runtime.TTS_ENGINE_NAME}… First launch may download a model.").pack()
     ttk.Label(splash, text="The window stays responsive while the local AI voice starts.").pack(pady=(4, 0))
     splash.update()
 
@@ -326,7 +337,7 @@ def main():
     root.deiconify()
     if runtime.SETTINGS.get("check_updates", True):
         runtime.check_for_updates_async(runtime.STATE)
-    print("Ready. Chatterbox Turbo is active. Use /wsv test in WoW. Close the window to keep running in the system tray.")
+    print("Ready. Selected TTS engine is active. Use /wsv test in WoW.")
     root.mainloop()
 
 
