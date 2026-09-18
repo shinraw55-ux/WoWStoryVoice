@@ -13,6 +13,22 @@ local function checksum(s)
   return c
 end
 
+local function utf8SafePrefix(s, maxBytes)
+  if #s <= maxBytes then return s end
+  local cut = maxBytes
+  while cut > 0 do
+    local b = string.byte(s, cut)
+    if b < 128 then return string.sub(s, 1, cut) end
+    if b >= 194 then
+      local need = (b < 224 and 2) or (b < 240 and 3) or 4
+      if cut + need - 1 <= maxBytes then return string.sub(s, 1, cut + need - 1) end
+      return string.sub(s, 1, cut - 1)
+    end
+    cut = cut - 1
+  end
+  return ""
+end
+
 local function ensurePixels(n)
   for i = #pixels + 1, n do
     local t = UIParent:CreateTexture(nil, "OVERLAY")
@@ -26,8 +42,12 @@ end
 local function emit(kind, npc, text)
   npc = npc or "Unknown"
   text = text or ""
-  local payload = kind .. "\31" .. npc .. "\31" .. text
-  if #payload > MAX_PAYLOAD then payload = string.sub(payload, 1, MAX_PAYLOAD) end
+  local prefix = kind .. "\31" .. npc .. "\31"
+  if #prefix >= MAX_PAYLOAD then
+    npc = utf8SafePrefix(npc, math.max(1, MAX_PAYLOAD - #kind - 3))
+    prefix = kind .. "\31" .. npc .. "\31"
+  end
+  local payload = prefix .. utf8SafePrefix(text, math.max(0, MAX_PAYLOAD - #prefix))
   seq = (seq + 1) % 256
   local packet = MAGIC .. string.char(seq) .. string.char(#payload) .. payload .. string.char(checksum(payload))
   ensurePixels(#packet)
