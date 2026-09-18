@@ -15,10 +15,12 @@ except Exception:
 import runtime
 import voice_profiles
 import beta_hardening
+import speaker_performance
 
-# Keep the proven WSV6 transport untouched while layering profile-aware voices
-# and beta hardening around the desktop runtime.
+# Keep the proven WSV6 transport untouched while layering profile-aware voices,
+# speaker clarity, expressive delivery and beta hardening around the runtime.
 runtime.engine.VoiceRegistry = voice_profiles.VoiceRegistry
+speaker_performance.configure_runtime(runtime, voice_profiles)
 runtime.synthesize_to_wav = beta_hardening.make_atomic_synthesizer(runtime.synthesize_to_wav)
 runtime.engine.play_wav = beta_hardening.make_validating_player(runtime.engine.play_wav)
 runtime.SpeechController = beta_hardening.make_bounded_controller(runtime.SpeechController)
@@ -66,8 +68,8 @@ class CompanionGUI:
         self.last_log_text = ""
 
         root.title(f"WoW Story Voice v{VERSION}")
-        root.geometry("700x580")
-        root.minsize(620, 500)
+        root.geometry("700x650")
+        root.minsize(620, 560)
         root.protocol("WM_DELETE_WINDOW", self.on_close)
 
         main = ttk.Frame(root, padding=14)
@@ -79,9 +81,13 @@ class CompanionGUI:
         status.pack(fill="x")
         self.bridge_var = tk.StringVar(value="Bridge: searching")
         self.addon_var = tk.StringVar(value="Addon: unknown")
+        self.speaker_var = tk.StringVar(value="Speaker: —")
         self.speech_var = tk.StringVar(value="Speech: idle")
         self.update_var = tk.StringVar(value="Update: not checked")
-        for var in (self.bridge_var, self.addon_var, self.speech_var, self.update_var):
+        for var in (self.bridge_var, self.addon_var):
+            ttk.Label(status, textvariable=var).pack(anchor="w", pady=1)
+        ttk.Label(status, textvariable=self.speaker_var, font=("Segoe UI", 12, "bold")).pack(anchor="w", pady=(5, 2))
+        for var in (self.speech_var, self.update_var):
             ttk.Label(status, textvariable=var).pack(anchor="w", pady=1)
 
         controls = ttk.Frame(main)
@@ -101,6 +107,34 @@ class CompanionGUI:
         self.volume_label = ttk.Label(row, text=f"{int(self.volume_var.get())}%", width=6)
         self.volume_label.pack(side="right")
         ttk.Scale(settings, from_=0, to=100, variable=self.volume_var, command=self.volume_changed).pack(fill="x", pady=(2, 8))
+
+        expressive_row = ttk.Frame(settings)
+        expressive_row.pack(fill="x")
+        ttk.Label(expressive_row, text="Performance intensity").pack(side="left")
+        self.expressiveness_var = tk.DoubleVar(
+            value=float(runtime.SETTINGS.get("expressiveness", speaker_performance.DEFAULT_EXPRESSIVENESS)) * 100.0
+        )
+        self.expressiveness_label = ttk.Label(
+            expressive_row, text=f"{int(round(self.expressiveness_var.get()))}%", width=6
+        )
+        self.expressiveness_label.pack(side="right")
+        ttk.Scale(
+            settings,
+            from_=75,
+            to=160,
+            variable=self.expressiveness_var,
+            command=self.expressiveness_changed,
+        ).pack(fill="x", pady=(2, 8))
+
+        self.speaker_announce_var = tk.BooleanVar(
+            value=bool(runtime.SETTINGS.get("announce_speaker", True))
+        )
+        ttk.Checkbutton(
+            settings,
+            text="Announce NPC name when the speaker changes",
+            variable=self.speaker_announce_var,
+            command=self.speaker_setting_changed,
+        ).pack(anchor="w")
 
         self.start_var = tk.BooleanVar(value=bool(runtime.SETTINGS.get("start_with_windows", False)))
         ttk.Checkbutton(settings, text="Start with Windows", variable=self.start_var, command=self.startup_changed).pack(anchor="w")
@@ -134,6 +168,8 @@ class CompanionGUI:
             self.addon_var.set(f"Addon: v{av} · compatible")
         else:
             self.addon_var.set(f"Addon: {av}")
+        speaker = snap.get("current_speaker", "—")
+        self.speaker_var.set(f"Speaker: {speaker}")
         speech = "speaking" if snap["speaking"] else "idle"
         delivery = snap.get("last_delivery", "neutral")
         self.speech_var.set(
@@ -156,6 +192,16 @@ class CompanionGUI:
         value = max(0, min(100, int(round(self.volume_var.get()))))
         self.volume_label.configure(text=f"{value}%")
         runtime.SETTINGS["volume"] = value / 100.0
+        runtime.save_settings(runtime.SETTINGS)
+
+    def expressiveness_changed(self, _=None):
+        value = max(75, min(160, int(round(self.expressiveness_var.get()))))
+        self.expressiveness_label.configure(text=f"{value}%")
+        runtime.SETTINGS["expressiveness"] = speaker_performance.normalized_expressiveness(value / 100.0)
+        runtime.save_settings(runtime.SETTINGS)
+
+    def speaker_setting_changed(self):
+        runtime.SETTINGS["announce_speaker"] = bool(self.speaker_announce_var.get())
         runtime.save_settings(runtime.SETTINGS)
 
     def startup_changed(self):
