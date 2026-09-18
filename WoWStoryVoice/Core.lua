@@ -25,12 +25,33 @@ local heartbeatElapsed = HEARTBEAT_SEC
 local optionsFrame = nil
 local optionChecks = {}
 local npcProfileCache = {}
+local currentInteractionType = nil
 
 WoWStoryVoiceDB = WoWStoryVoiceDB or {}
 if WoWStoryVoiceDB.skipBlizzardVoiced == nil then WoWStoryVoiceDB.skipBlizzardVoiced = true end
 if WoWStoryVoiceDB.monsterDialogue == nil then WoWStoryVoiceDB.monsterDialogue = true end
 if WoWStoryVoiceDB.questDialogue == nil then WoWStoryVoiceDB.questDialogue = true end
 if WoWStoryVoiceDB.gossipDialogue == nil then WoWStoryVoiceDB.gossipDialogue = true end
+if type(WoWStoryVoiceDB.npcProfiles) ~= "table" then WoWStoryVoiceDB.npcProfiles = {} end
+
+local INTERACTION_ROLE = {
+  [5] = "merchant",
+  [7] = "trainer",
+  [8] = "banker",
+  [10] = "banker",
+  [18] = "spirithealer",
+  [21] = "auctioneer",
+  [22] = "stablemaster",
+  [23] = "battlemaster",
+  [24] = "transmogrifier",
+  [27] = "auctioneer",
+  [52] = "guide",
+  [57] = "merchant",
+  [59] = "profession",
+  [66] = "forgemaster",
+  [67] = "banker",
+  [68] = "banker",
+}
 
 local MONSTER_EVENT_KIND = {
   CHAT_MSG_MONSTER_SAY = "monster_say",
@@ -204,16 +225,28 @@ local function profileSuffixForUnit(unit)
   local sex = tonumber(UnitSex(unit)) or 1
   local _, englishRace = UnitRace(unit)
   local _, creatureTypeID = UnitCreatureType(unit)
+  local _, classFile = UnitClass(unit)
+  local classification = UnitClassification(unit)
+  local role = ""
+  if unit == "npc" and currentInteractionType ~= nil then
+    role = INTERACTION_ROLE[tonumber(currentInteractionType)] or ""
+  end
   return "#wsv#sex=" .. tostring(sex)
     .. ";race=" .. sanitizeProfileValue(englishRace)
     .. ";ctype=" .. sanitizeProfileValue(creatureTypeID)
+    .. ";class=" .. sanitizeProfileValue(classFile)
+    .. ";rank=" .. sanitizeProfileValue(classification)
+    .. ";role=" .. sanitizeProfileValue(role)
 end
 
 local function rememberProfile(guid, suffix)
   if type(guid) ~= "string" or guid == "" or type(suffix) ~= "string" then return end
   npcProfileCache[guid] = suffix
   local templateKey = guidTemplateKey(guid)
-  if templateKey ~= "" then npcProfileCache[templateKey] = suffix end
+  if templateKey ~= "" then
+    npcProfileCache[templateKey] = suffix
+    WoWStoryVoiceDB.npcProfiles[templateKey] = suffix
+  end
 end
 
 local function profiledGuidForUnit(unit)
@@ -236,8 +269,13 @@ local function profiledGuidForSender(guid)
     end
   end
 
-  local suffix = npcProfileCache[guid] or npcProfileCache[guidTemplateKey(guid)]
-  if suffix then return guid .. suffix end
+  local templateKey = guidTemplateKey(guid)
+  local suffix = npcProfileCache[guid] or npcProfileCache[templateKey] or WoWStoryVoiceDB.npcProfiles[templateKey]
+  if suffix then
+    npcProfileCache[guid] = suffix
+    if templateKey ~= "" then npcProfileCache[templateKey] = suffix end
+    return guid .. suffix
+  end
   return guid
 end
 
@@ -392,6 +430,11 @@ local function toggleOptions()
 end
 
 WSV:RegisterEvent("PLAYER_LOGIN")
+WSV:RegisterEvent("PLAYER_TARGET_CHANGED")
+WSV:RegisterEvent("PLAYER_FOCUS_CHANGED")
+WSV:RegisterEvent("UPDATE_MOUSEOVER_UNIT")
+WSV:RegisterEvent("PLAYER_INTERACTION_MANAGER_FRAME_SHOW")
+WSV:RegisterEvent("PLAYER_INTERACTION_MANAGER_FRAME_HIDE")
 WSV:RegisterEvent("QUEST_DETAIL")
 WSV:RegisterEvent("QUEST_PROGRESS")
 WSV:RegisterEvent("QUEST_COMPLETE")
@@ -405,6 +448,18 @@ WSV:RegisterEvent("CHAT_MSG_MONSTER_PARTY")
 WSV:SetScript("OnEvent", function(_, event, ...)
   if event == "PLAYER_LOGIN" then
     heartbeatElapsed = HEARTBEAT_SEC
+  elseif event == "PLAYER_INTERACTION_MANAGER_FRAME_SHOW" then
+    currentInteractionType = select(1, ...)
+    if UnitGUID("npc") then profiledGuidForUnit("npc") end
+  elseif event == "PLAYER_INTERACTION_MANAGER_FRAME_HIDE" then
+    local hiddenType = select(1, ...)
+    if hiddenType == nil or hiddenType == currentInteractionType then currentInteractionType = nil end
+  elseif event == "PLAYER_TARGET_CHANGED" then
+    if UnitGUID("target") then profiledGuidForUnit("target") end
+  elseif event == "PLAYER_FOCUS_CHANGED" then
+    if UnitGUID("focus") then profiledGuidForUnit("focus") end
+  elseif event == "UPDATE_MOUSEOVER_UNIT" then
+    if UnitGUID("mouseover") then profiledGuidForUnit("mouseover") end
   elseif event == "QUEST_DETAIL" then
     if WoWStoryVoiceDB.questDialogue then capture("quest", GetQuestText()) end
   elseif event == "QUEST_PROGRESS" then
