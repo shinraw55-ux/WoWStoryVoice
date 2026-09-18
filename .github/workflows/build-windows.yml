@@ -47,7 +47,7 @@ jobs:
           python Companion/test_latency.py
           python Companion/test_chatterbox.py
           python Companion/test_multi_engine.py
-          python -m py_compile Companion/companion.py Companion/runtime.py Companion/app.py Companion/voice_profiles.py Companion/emotion_profiles.py Companion/beta_hardening.py Companion/speaker_performance.py Companion/chatterbox_backend.py Companion/chatterbox_patch.py Companion/kokoro_backend.py Companion/cosyvoice_backend.py Companion/tts_registry.py Companion/multi_engine.py
+          python -m py_compile Companion/companion.py Companion/runtime.py Companion/app.py Companion/voice_profiles.py Companion/emotion_profiles.py Companion/beta_hardening.py Companion/speaker_performance.py Companion/chatterbox_backend.py Companion/chatterbox_patch.py Companion/kokoro_backend.py Companion/cosyvoice_backend.py Companion/tts_registry.py Companion/multi_engine.py Companion/voice_reference.py
       - name: Locate espeak-ng data
         id: espeak
         shell: pwsh
