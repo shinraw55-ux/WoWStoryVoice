@@ -2,5 +2,5 @@
 ## Title: WoW Story Voice
 ## Notes: Local AI voices for quest and gossip dialogue
 ## Author: WoWStoryVoice
-## Version: 0.3.6
+## Version: 0.4.0
 Core.lua
