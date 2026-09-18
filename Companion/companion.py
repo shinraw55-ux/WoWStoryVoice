@@ -14,7 +14,6 @@ from pathlib import Path
 import mss
 import numpy as np
 import soundfile as sf
-from kokoro_onnx import Kokoro
 
 if sys.platform == "win32":
     import winsound
@@ -659,6 +658,7 @@ def main():
     ensure_models()
 
     print("Loading local TTS...")
+    from kokoro_onnx import Kokoro
     kokoro = Kokoro(str(MODEL), str(VOICES))
     available = kokoro.get_voices()
     print(f"Kokoro ready. {len(available)} voices available.")
