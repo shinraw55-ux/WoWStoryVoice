@@ -2,7 +2,7 @@ local addonName = ...
 local WSV = CreateFrame("Frame")
 local pixels = {}
 local seq = 0
-local MAGIC = "WSV2"
+local MAGIC = "WSV4"
 local MAX_PAYLOAD = 96
 local PIXEL_SIZE = 5
 local X0, Y0 = 20, -20
@@ -39,6 +39,28 @@ local function ensurePixels(n)
   end
 end
 
+-- Robust transport: each byte is represented by two 4-bit grayscale cells.
+-- 16 levels are 17 luminance values apart, giving the screen capture ample
+-- tolerance instead of requiring an exact 0..255 grayscale byte.
+local function emitByteCells(bytes)
+  local cells = {}
+  for i = 1, #bytes do
+    local b = string.byte(bytes, i)
+    cells[#cells+1] = math.floor(b / 16)
+    cells[#cells+1] = b % 16
+  end
+  ensurePixels(#cells)
+  for i = 1, #pixels do
+    if i <= #cells then
+      local v = cells[i] / 15
+      pixels[i]:SetColorTexture(v,v,v,1)
+      pixels[i]:Show()
+    else
+      pixels[i]:Hide()
+    end
+  end
+end
+
 local function emit(kind, npc, text)
   npc = npc or "Unknown"
   text = text or ""
@@ -50,16 +72,7 @@ local function emit(kind, npc, text)
   local payload = prefix .. utf8SafePrefix(text, math.max(0, MAX_PAYLOAD - #prefix))
   seq = (seq + 1) % 256
   local packet = MAGIC .. string.char(seq) .. string.char(#payload) .. payload .. string.char(checksum(payload))
-  ensurePixels(#packet)
-  for i = 1, #pixels do
-    if i <= #packet then
-      local v = string.byte(packet, i) / 255
-      pixels[i]:SetColorTexture(v,v,v,1)
-      pixels[i]:Show()
-    else
-      pixels[i]:Hide()
-    end
-  end
+  emitByteCells(packet)
 end
 
 local function npcName()
@@ -85,7 +98,7 @@ SlashCmdList.WOWSTORYVOICE = function(msg)
   msg = string.lower(msg or "")
   if msg == "test" then
     emit("test", "Narrator", "WoW Story Voice is connected and ready.")
-    print("|cff66ff66WoW Story Voice:|r test packet sent.")
+    print("|cff66ff66WoW Story Voice:|r test packet sent (v0.4 transport).")
   elseif msg == "hide" then
     for _, p in ipairs(pixels) do p:Hide() end
   elseif msg == "show" then
