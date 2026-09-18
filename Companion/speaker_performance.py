@@ -1,8 +1,6 @@
 import time
 from dataclasses import replace
 
-import chatterbox_patch
-
 
 SPEAKER_REPEAT_SEC = 30.0
 DEFAULT_EXPRESSIVENESS = 1.35
@@ -170,11 +168,7 @@ def make_speaker_controller(base_cls, voice_profiles_module, settings):
 
 
 def configure_runtime(runtime_module, voice_profiles_module):
-    """Install Chatterbox plus speaker/engagement layers without changing WSV6 framing."""
-    # Configure the experimental engine first so beta hardening later wraps the
-    # Chatterbox synthesizer rather than the legacy Kokoro function.
-    chatterbox_patch.configure_runtime(runtime_module)
-
+    """Install the speaker/engagement layer once without changing WSV6 framing."""
     if getattr(runtime_module, "_speaker_performance_configured", False):
         return
 
