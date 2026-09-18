@@ -11,6 +11,7 @@ import sounddevice as sd
 import soundfile as sf
 from kokoro_onnx import Kokoro
 
+VERSION = "0.3.4"
 MAGIC = b"WSV2"
 PIXEL_SIZE = 5
 X0, Y0 = 20, 20
@@ -35,6 +36,7 @@ VOICES = Path(os.environ.get("WSV_VOICES", DATA / "voices-v1.0.bin"))
 def download(url, dest, label):
     if dest.exists() and dest.stat().st_size > 1024 * 1024:
         return
+    dest.parent.mkdir(parents=True, exist_ok=True)
     tmp = dest.with_suffix(dest.suffix + ".part")
     print(f"{label} is missing. Downloading it once...")
     print(f"Destination: {dest}")
@@ -45,12 +47,12 @@ def download(url, dest, label):
                 print(f"\r{label}: {pct:3d}%", end="", flush=True)
         urllib.request.urlretrieve(url, tmp, reporthook=progress)
         print()
+        if tmp.stat().st_size <= 1024 * 1024:
+            raise RuntimeError(f"{label} download is unexpectedly small")
         tmp.replace(dest)
     except Exception:
-        try:
-            tmp.unlink(missing_ok=True)
-        except Exception:
-            pass
+        try: tmp.unlink(missing_ok=True)
+        except Exception: pass
         raise
 
 def ensure_models():
@@ -68,29 +70,38 @@ def sample_packet(sct):
     return bytes(out)
 
 def decode(raw):
-    if raw[:4] != MAGIC:
-        return None
+    if raw[:4] != MAGIC: return None
     seq, ln = raw[4], raw[5]
-    if ln > 96 or 6 + ln >= len(raw):
-        return None
+    if ln > 96 or 6 + ln >= len(raw): return None
     payload = raw[6:6+ln]
-    if sum(payload) % 256 != raw[6+ln]:
-        return None
+    if sum(payload) % 256 != raw[6+ln]: return None
     try:
-        kind, npc, text = payload.decode("utf-8", errors="ignore").split("\x1f", 2)
-    except ValueError:
+        decoded = payload.decode("utf-8")
+        kind, npc, text = decoded.split("\x1f", 2)
+    except (ValueError, UnicodeDecodeError):
         return None
     return seq, kind, npc, text
 
 def choose_voice(npc, available):
     pool = [v for v in PREFERRED if v in available] or list(available)
-    if not pool:
-        raise RuntimeError("No Kokoro voices available")
-    idx = int(hashlib.sha256(npc.encode("utf-8")).hexdigest(), 16) % len(pool)
-    return pool[idx]
+    if not pool: raise RuntimeError("No Kokoro voices available")
+    return pool[int(hashlib.sha256(npc.encode("utf-8")).hexdigest(), 16) % len(pool)]
+
+def speak(kokoro, available, kind, npc, text):
+    voice = choose_voice(npc, available)
+    key = hashlib.sha256((voice+"\0"+text).encode()).hexdigest()
+    wav = CACHE / f"{key}.wav"
+    print(f"[{kind}] {npc}: {text}")
+    if wav.exists():
+        audio, sr = sf.read(wav, dtype="float32")
+    else:
+        audio, sr = kokoro.create(text, voice=voice, speed=1.0, lang="en-us")
+        sf.write(wav, audio, sr)
+    sd.stop()
+    sd.play(audio, sr)
 
 def main():
-    print("WoW Story Voice v0.3.1")
+    print(f"WoW Story Voice v{VERSION}")
     print("First launch downloads the local Kokoro model. No Python installation is required.")
     ensure_models()
     print("Loading local TTS...")
@@ -100,21 +111,18 @@ def main():
     last = None
     with mss.mss() as sct:
         while True:
-            msg = decode(sample_packet(sct))
-            if msg and msg[0] != last:
-                seq, kind, npc, text = msg
-                last = seq
-                voice = choose_voice(npc, available)
-                key = hashlib.sha256((voice+"\0"+text).encode()).hexdigest()
-                wav = CACHE / f"{key}.wav"
-                print(f"[{kind}] {npc}: {text}")
-                if wav.exists():
-                    audio, sr = sf.read(wav, dtype="float32")
-                else:
-                    audio, sr = kokoro.create(text, voice=voice, speed=1.0, lang="en-us")
-                    sf.write(wav, audio, sr)
-                sd.stop()
-                sd.play(audio, sr)
+            try:
+                msg = decode(sample_packet(sct))
+                if msg and msg[0] != last:
+                    seq, kind, npc, text = msg
+                    last = seq
+                    try:
+                        speak(kokoro, available, kind, npc, text)
+                    except Exception as e:
+                        print(f"TTS error for packet {seq}: {e}")
+            except Exception as e:
+                print(f"Bridge read error: {e}")
+                time.sleep(0.5)
             time.sleep(0.04)
 
 if __name__ == "__main__":
