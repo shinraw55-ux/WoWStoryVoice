@@ -27,10 +27,17 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r Companion/requirements.txt
           pip install pyinstaller
+      - name: Locate espeak-ng data
+        id: espeak
+        shell: pwsh
+        run: |
+          $pkg = python -c "import espeakng_loader, pathlib; print(pathlib.Path(espeakng_loader.__file__).parent)"
+          Write-Host "espeakng_loader package: $pkg"
+          Get-ChildItem -Recurse $pkg | Select-Object FullName
       - name: Build EXE
         shell: pwsh
         run: |
-          pyinstaller --noconfirm --clean --onefile --console --name WoWStoryVoice --collect-all kokoro_onnx Companion/companion.py
+          pyinstaller --noconfirm --clean --onefile --console --name WoWStoryVoice --collect-all kokoro_onnx --collect-all espeakng_loader Companion/companion.py
       - name: Package addon
         shell: pwsh
         run: |
