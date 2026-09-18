@@ -61,13 +61,7 @@ def should_announce_speaker(
 
 
 def shape_delivery(profile, kind, base_speed, base_pause, intensity=DEFAULT_EXPRESSIVENESS):
-    """Make dialogue more animated without changing the spoken words.
-
-    Existing Phase 12 emotion analysis remains the source of truth. This layer
-    only scales the already selected speed/pause/gain away from neutral. Lines
-    with no strong detected emotion get a small conversational lift so ordinary
-    quest/gossip text does not sound as flat.
-    """
+    """Make dialogue more animated without changing the spoken words."""
     kind_token = str(kind or "").casefold()
 
     if kind_token == "speaker_cue":
@@ -84,8 +78,6 @@ def shape_delivery(profile, kind, base_speed, base_pause, intensity=DEFAULT_EXPR
     intensity = normalized_expressiveness(intensity)
 
     if profile.emotion == "neutral" and kind_token in SPOKEN_DIALOGUE_KINDS:
-        # A subtle baseline performance for otherwise neutral dialogue. This is
-        # deliberately small: it should sound conversational, not theatrical.
         lift = intensity / DEFAULT_EXPRESSIVENESS
         speed = float(base_speed) * (1.0 + 0.028 * lift)
         pause = float(base_pause) * (1.0 - 0.14 * lift)
@@ -99,8 +91,6 @@ def shape_delivery(profile, kind, base_speed, base_pause, intensity=DEFAULT_EXPR
             cues=tuple(profile.cues) + ("conversational lift",),
         )
 
-    # Stronger evidence earns a little more range, while all parameters stay
-    # within hard safety bounds.
     strength = intensity
     if getattr(profile, "score", 0) >= 7:
         strength *= 1.10
@@ -121,11 +111,11 @@ def shape_delivery(profile, kind, base_speed, base_pause, intensity=DEFAULT_EXPR
 
 
 def make_speaker_controller(base_cls, voice_profiles_module, settings):
-    """Optionally add a short narrator cue when the speaking NPC changes.
+    """Optionally add an audible NPC-name cue before dialogue.
 
-    The in-world visual indicator is now the default speaker-identification
-    mechanism. Audible name cues remain available as an opt-in accessibility
-    feature because they necessarily add playback latency before the NPC line.
+    The visual in-world indicator is the normal identification path. Audible
+    names are a separate opt-in accessibility feature because generating and
+    playing them necessarily delays the actual NPC line.
     """
 
     class SpeakerAwareController(base_cls):
@@ -151,7 +141,7 @@ def make_speaker_controller(base_cls, voice_profiles_module, settings):
                     identity,
                     name,
                     now=now,
-                    enabled=bool(settings.get("announce_speaker", False)),
+                    enabled=bool(settings.get("spoken_speaker_name", False)),
                 ):
                     super().enqueue("speaker_cue", "", "Narrator", f"{name}.")
 
@@ -182,10 +172,9 @@ def configure_runtime(runtime_module, voice_profiles_module):
     if getattr(runtime_module, "_speaker_performance_configured", False):
         return
 
-    # The in-world indicator makes spoken NPC-name pre-roll unnecessary by
-    # default, and removing it avoids an extra TTS generation + playback before
-    # every new speaker. Users can still opt back in from the GUI.
-    runtime_module.SETTINGS.setdefault("announce_speaker", False)
+    # New key intentionally ignores the old announce_speaker value so users who
+    # tried the previous default do not unknowingly keep an extra TTS pre-roll.
+    runtime_module.SETTINGS.setdefault("spoken_speaker_name", False)
     runtime_module.SETTINGS.setdefault("expressiveness", DEFAULT_EXPRESSIVENESS)
     runtime_module.SETTINGS["expressiveness"] = normalized_expressiveness(
         runtime_module.SETTINGS.get("expressiveness")
