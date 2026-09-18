@@ -32,11 +32,7 @@ jobs:
           # wheels explicitly so the packaged companion can use NVIDIA GPUs.
           pip install torch==2.6.0 torchvision==0.21.0 torchaudio==2.6.0 --index-url https://download.pytorch.org/whl/cu124
           pip install -r Companion/requirements.txt
-          # companion.py remains the proven WSV6 transport module and still has
-          # a legacy Kokoro import. Keep only the import-time compatibility
-          # package for this experimental build; Kokoro is not the active TTS.
-          pip install --no-deps kokoro-onnx==0.6.1
-          pip install espeakng-loader phonemizer onnxruntime
+          pip install espeakng-loader phonemizer
           pip install pyinstaller
           python -c "import torch; print('torch', torch.__version__, 'cuda build', torch.version.cuda); from chatterbox.tts_turbo import ChatterboxTurboTTS; print('Chatterbox Turbo import OK')"
       - name: Run regression and package tests
@@ -50,7 +46,8 @@ jobs:
           python Companion/test_speaker_indicator.py
           python Companion/test_latency.py
           python Companion/test_chatterbox.py
-          python -m py_compile Companion/companion.py Companion/runtime.py Companion/app.py Companion/voice_profiles.py Companion/emotion_profiles.py Companion/beta_hardening.py Companion/speaker_performance.py Companion/chatterbox_backend.py Companion/chatterbox_patch.py
+          python Companion/test_multi_engine.py
+          python -m py_compile Companion/companion.py Companion/runtime.py Companion/app.py Companion/voice_profiles.py Companion/emotion_profiles.py Companion/beta_hardening.py Companion/speaker_performance.py Companion/chatterbox_backend.py Companion/chatterbox_patch.py Companion/kokoro_backend.py Companion/cosyvoice_backend.py Companion/tts_registry.py Companion/multi_engine.py
       - name: Locate espeak-ng data
         id: espeak
         shell: pwsh
