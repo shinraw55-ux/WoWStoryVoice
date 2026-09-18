@@ -1,6 +1,6 @@
 mss
-numpy
+numpy>=1.24,<2.0
 soundfile
-kokoro-onnx[gpu]
+chatterbox-tts==0.1.7
 pystray
 Pillow
