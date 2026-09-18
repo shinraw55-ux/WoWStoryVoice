@@ -2,3 +2,5 @@ mss
 numpy
 soundfile
 kokoro-onnx
+pystray
+Pillow
