@@ -28,6 +28,11 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r Companion/requirements.txt
           pip install pyinstaller
+      - name: Run protocol regression tests
+        shell: pwsh
+        run: |
+          python Companion/test_protocol.py
+          python -m py_compile Companion/companion.py
       - name: Locate espeak-ng data
         id: espeak
         shell: pwsh
