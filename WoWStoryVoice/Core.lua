@@ -2,20 +2,15 @@ local addonName = ...
 local WSV = CreateFrame("Frame")
 local pixels = {}
 
-local VERSION = "0.6.0"
+local VERSION = "0.7.0"
 local MAGIC = "WSV6"
 
--- Keep the already live-verified WSV5 RGB pixel transport geometry.
--- WSV6 changes only the packet/application layer to support chunked messages.
+-- WSV6 transport remains unchanged from v0.6.0 to protect the live-verified
+-- RGB bridge while higher-level dialogue handling evolves.
 local CELL_PX = 5
 local X_PX = 20
 local Y_PX = 20
-local CELLS_PER_BYTE = 3
 
--- Packet layout (max 103 bytes, same screen width as v0.5.0):
--- 4 magic + 2 msg id + 2 chunk index + 2 chunk total + 1 len
--- + up to 91 data bytes + 1 checksum.
-local MAX_PACKET = 103
 local CHUNK_DATA_MAX = 91
 local TX_HOLD_SEC = 0.16
 local TX_MIN_WINDOW_SEC = 2.6
@@ -26,6 +21,21 @@ local txQueue = {}
 local txHead = 1
 local txElapsed = 0
 local currentPacket = nil
+
+WoWStoryVoiceDB = WoWStoryVoiceDB or {}
+if WoWStoryVoiceDB.skipBlizzardVoiced == nil then
+  WoWStoryVoiceDB.skipBlizzardVoiced = true
+end
+if WoWStoryVoiceDB.monsterDialogue == nil then
+  WoWStoryVoiceDB.monsterDialogue = true
+end
+
+local MONSTER_EVENT_KIND = {
+  CHAT_MSG_MONSTER_SAY = "monster_say",
+  CHAT_MSG_MONSTER_YELL = "monster_yell",
+  CHAT_MSG_MONSTER_WHISPER = "monster_whisper",
+  CHAT_MSG_MONSTER_PARTY = "monster_party",
+}
 
 local function checksum(s)
   local c = 0
@@ -101,10 +111,6 @@ local function makeChunkPacket(msgId, chunkIndex, chunkTotal, chunkData)
   return MAGIC .. body .. string.char(checksum(body))
 end
 
-local function queuePacket(packet)
-  txQueue[#txQueue + 1] = packet
-end
-
 local function compactTxQueue()
   if txHead <= 128 then return end
   local remaining = {}
@@ -128,9 +134,6 @@ local function enqueueMessage(kind, npcGuid, npc, text, priority)
   npc = npc or "Unknown"
   text = text or ""
 
-  -- Chunk the raw UTF-8 byte stream. Decoding happens only after complete
-  -- reassembly in the companion, so multi-byte characters cannot be split
-  -- incorrectly by the transport layer.
   local message = kind .. "\31" .. npcGuid .. "\31" .. npc .. "\31" .. text
   local chunkTotal = math.max(1, math.ceil(#message / CHUNK_DATA_MAX))
 
@@ -148,9 +151,6 @@ local function enqueueMessage(kind, npcGuid, npc, text, priority)
     packets[#packets + 1] = makeChunkPacket(messageId, chunkIndex, chunkTotal, chunkData)
   end
 
-  -- Keep every message visible long enough for the companion to discover the
-  -- bridge, then repeat the full chunk set for loss recovery. Small messages
-  -- get more rounds; long messages avoid excessive latency.
   local cycleSec = #packets * TX_HOLD_SEC
   local rounds = math.max(TX_MIN_ROUNDS, math.ceil(TX_MIN_WINDOW_SEC / math.max(cycleSec, TX_HOLD_SEC)))
   rounds = math.min(rounds, 16)
@@ -176,7 +176,7 @@ local function enqueueMessage(kind, npcGuid, npc, text, priority)
     currentPacket = nil
   else
     for _, packet in ipairs(staged) do
-      queuePacket(packet)
+      txQueue[#txQueue + 1] = packet
     end
   end
 end
@@ -214,50 +214,102 @@ local function npcInfo()
 end
 
 local function capture(kind, text)
-  if not text or text == "" then return end
+  if type(text) ~= "string" or text == "" then return end
   local guid, name = npcInfo()
   enqueueMessage(kind, guid, name, text, false)
 end
 
-WSV:RegisterEvent("QUEST_DETAIL")
-WSV:RegisterEvent("QUEST_COMPLETE")
-WSV:RegisterEvent("GOSSIP_SHOW")
+local function captureMonsterEvent(event, ...)
+  if not WoWStoryVoiceDB.monsterDialogue then return end
 
-WSV:SetScript("OnEvent", function(_, event)
+  local text = select(1, ...)
+  local name = select(2, ...)
+  local guid = select(12, ...)
+  local isSubtitle = select(15, ...)
+  local hideSenderInLetterbox = select(16, ...)
+
+  if type(text) ~= "string" or text == "" then return end
+  if type(name) ~= "string" or name == "" then name = "Unknown" end
+  if type(guid) ~= "string" then guid = "" end
+
+  -- Blizzard marks chat lines used as subtitles/cinematic text in the generic
+  -- CHAT_MSG payload. With the default setting enabled, do not synthesize those
+  -- lines so the local TTS does not speak over Blizzard's original presentation.
+  if WoWStoryVoiceDB.skipBlizzardVoiced and (isSubtitle == true or hideSenderInLetterbox == true) then
+    return
+  end
+
+  enqueueMessage(MONSTER_EVENT_KIND[event] or "monster", guid, name, text, false)
+end
+
+WSV:RegisterEvent("QUEST_DETAIL")
+WSV:RegisterEvent("QUEST_PROGRESS")
+WSV:RegisterEvent("QUEST_COMPLETE")
+WSV:RegisterEvent("QUEST_GREETING")
+WSV:RegisterEvent("GOSSIP_SHOW")
+WSV:RegisterEvent("CHAT_MSG_MONSTER_SAY")
+WSV:RegisterEvent("CHAT_MSG_MONSTER_YELL")
+WSV:RegisterEvent("CHAT_MSG_MONSTER_WHISPER")
+WSV:RegisterEvent("CHAT_MSG_MONSTER_PARTY")
+
+WSV:SetScript("OnEvent", function(_, event, ...)
   if event == "QUEST_DETAIL" then
     capture("quest", GetQuestText())
+  elseif event == "QUEST_PROGRESS" then
+    capture("progress", GetProgressText())
   elseif event == "QUEST_COMPLETE" then
     capture("reward", GetRewardText())
+  elseif event == "QUEST_GREETING" then
+    capture("greeting", GetGreetingText())
   elseif event == "GOSSIP_SHOW" then
     local text = C_GossipInfo and C_GossipInfo.GetText and C_GossipInfo.GetText()
     capture("gossip", text)
+  elseif MONSTER_EVENT_KIND[event] then
+    captureMonsterEvent(event, ...)
   end
 end)
 
+local function boolText(value)
+  return value and "ON" or "OFF"
+end
+
 SLASH_WOWSTORYVOICE1 = "/wsv"
 SlashCmdList.WOWSTORYVOICE = function(msg)
-  msg = string.lower(msg or "")
+  local raw = msg or ""
+  local command, arg = string.match(string.lower(raw), "^(%S*)%s*(%S*)")
 
-  if msg == "test" then
+  if command == "test" then
     enqueueMessage(
       "test",
       "",
       "Narrator",
-      "WoW Story Voice is connected and ready. Full dialogue chunking and queued speech are active.",
+      "WoW Story Voice is connected and ready. Full dialogue, queued speech, persistent NPC voices and improved pacing are active.",
       true
     )
-    print("|cff66ff66WoW Story Voice:|r test queued (v" .. VERSION .. ", WSV6 chunk transport).")
-  elseif msg == "stop" then
+    print("|cff66ff66WoW Story Voice:|r test queued (v" .. VERSION .. ", WSV6 transport).")
+  elseif command == "stop" then
     clearTxQueue()
     enqueueMessage("control", "", "Narrator", "stop", true)
     print("|cff66ff66WoW Story Voice:|r stop command sent.")
-  elseif msg == "hide" then
+  elseif command == "blizzard" and (arg == "on" or arg == "off") then
+    WoWStoryVoiceDB.skipBlizzardVoiced = (arg == "on")
+    print("|cff66ff66WoW Story Voice:|r skip Blizzard subtitle/cinematic lines: " .. boolText(WoWStoryVoiceDB.skipBlizzardVoiced))
+  elseif command == "monsters" and (arg == "on" or arg == "off") then
+    WoWStoryVoiceDB.monsterDialogue = (arg == "on")
+    print("|cff66ff66WoW Story Voice:|r ambient NPC dialogue: " .. boolText(WoWStoryVoiceDB.monsterDialogue))
+  elseif command == "status" then
+    print("|cff66ff66WoW Story Voice " .. VERSION .. "|r / WSV6")
+    print("  Skip Blizzard subtitle/cinematic lines: " .. boolText(WoWStoryVoiceDB.skipBlizzardVoiced))
+    print("  Ambient NPC dialogue: " .. boolText(WoWStoryVoiceDB.monsterDialogue))
+  elseif command == "hide" then
     for _, p in ipairs(pixels) do
       p:Hide()
     end
-  elseif msg == "show" then
+  elseif command == "show" then
     enqueueMessage("test", "", "Narrator", "Bridge visible.", true)
   else
-    print("|cff66ff66WoW Story Voice " .. VERSION .. "|r: /wsv test, /wsv stop, /wsv show, /wsv hide")
+    print("|cff66ff66WoW Story Voice " .. VERSION .. "|r commands:")
+    print("  /wsv test, /wsv stop, /wsv status, /wsv show, /wsv hide")
+    print("  /wsv blizzard on|off, /wsv monsters on|off")
   end
 end
