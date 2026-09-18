@@ -2,6 +2,7 @@ import tempfile
 import unittest
 from pathlib import Path
 import tts_registry
+import multi_engine
 
 class MultiEngineTests(unittest.TestCase):
     def test_all_three_registered(self):
@@ -13,6 +14,23 @@ class MultiEngineTests(unittest.TestCase):
     def test_labels_are_unique(self):
         vals=list(tts_registry.labels().values())
         self.assertEqual(len(vals), len(set(vals)))
+    def test_external_saved_engine_migrates_to_bundled_default(self):
+        class State:
+            def set(self, **kwargs):
+                pass
+        with tempfile.TemporaryDirectory() as d:
+            class Runtime:
+                SETTINGS = {"tts_engine": "kokoro"}
+                DATA = Path(d)
+                CACHE = Path(d) / "cache"
+                STATE = State()
+                _multi_engine_configured = False
+                @staticmethod
+                def save_settings(settings):
+                    pass
+            multi_engine.configure_runtime(Runtime)
+            self.assertEqual(Runtime.SETTINGS["tts_engine"], "chatterbox")
+            self.assertEqual(Runtime.TTS_ENGINE_NAME, "Chatterbox Turbo")
     def test_optional_cosyvoice_fails_loudly_when_missing(self):
         from cosyvoice_backend import CosyVoiceBackend
         with tempfile.TemporaryDirectory() as d:
