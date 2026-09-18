@@ -23,6 +23,7 @@ else:
     winreg = None
 
 import companion as engine
+import emotion_profiles
 
 VERSION = "0.8.0"
 UPDATE_MANIFEST_URL = "https://raw.githubusercontent.com/shinraw55-ux/WoWStoryVoice/main/release.json"
@@ -150,6 +151,7 @@ class SharedState:
             "speaking": False,
             "queue_size": 0,
             "last_message": "—",
+            "last_delivery": "neutral",
             "last_error": "",
             "update_status": "Not checked",
             "update_url": WORKFLOW_URL,
@@ -238,21 +240,59 @@ class SpeechController:
                 segments = engine.split_dialogue(job.text)
                 if not segments:
                     continue
-                self.state.set(speaking=True, queue_size=self.jobs.qsize())
-                print(f"Speaking: [{job.kind}] {job.npc_name}, voice={voice}, segments={len(segments)}")
+
+                baseline = emotion_profiles.infer_emotion(job.kind, job.text, job.npc_guid)
+                self.state.set(
+                    speaking=True,
+                    queue_size=self.jobs.qsize(),
+                    last_delivery=baseline.name,
+                )
+                print(
+                    f"Speaking: [{job.kind}] {job.npc_name}, voice={voice}, "
+                    f"segments={len(segments)}, context_emotion={baseline.name}, score={baseline.score}"
+                )
+
                 for index, segment in enumerate(segments, start=1):
                     if not self._is_current(job.epoch):
                         break
-                    speed, pause = engine.prosody_for_segment(job.kind, segment)
-                    volume = SETTINGS.get("volume", 1.0)
-                    key = hashlib.sha256(f"{voice}\0{speed:.3f}\0{volume:.3f}\0{segment}".encode("utf-8")).hexdigest()
+
+                    base_speed, base_pause = engine.prosody_for_segment(job.kind, segment)
+                    delivery = emotion_profiles.delivery_for_segment(
+                        job.kind,
+                        segment,
+                        job.npc_guid,
+                        base_speed,
+                        base_pause,
+                        baseline=baseline,
+                    )
+                    master_volume = SETTINGS.get("volume", 1.0)
+                    volume = max(0.0, min(1.0, float(master_volume) * delivery.gain))
+                    speed = delivery.speed
+                    pause = delivery.pause
+                    self.state.set(last_delivery=delivery.emotion)
+
+                    key_material = (
+                        f"{voice}\0{delivery.emotion}\0{speed:.3f}\0{volume:.3f}\0{segment}"
+                    ).encode("utf-8")
+                    key = hashlib.sha256(key_material).hexdigest()
                     wav = CACHE / f"{key}.wav"
                     if not wav.exists():
-                        sr, frames, peak = synthesize_to_wav(self.kokoro, voice, segment, wav, speed, volume)
+                        sr, frames, peak = synthesize_to_wav(
+                            self.kokoro, voice, segment, wav, speed, volume
+                        )
+                        cue_text = ",".join(delivery.cues[:4]) or "none"
                         print(
                             f"TTS generated: [{job.kind}] {job.npc_name}, segment={index}/{len(segments)}, "
-                            f"speed={speed:.2f}, volume={volume:.2f}, {frames} frames @ {sr} Hz, peak {peak:.3f}"
+                            f"emotion={delivery.emotion}, score={delivery.score}, cues={cue_text}, "
+                            f"speed={speed:.2f}, gain={delivery.gain:.2f}, volume={volume:.2f}, "
+                            f"{frames} frames @ {sr} Hz, peak {peak:.3f}"
                         )
+                    else:
+                        print(
+                            f"TTS cache: [{job.kind}] {job.npc_name}, segment={index}/{len(segments)}, "
+                            f"emotion={delivery.emotion}, speed={speed:.2f}, gain={delivery.gain:.2f}"
+                        )
+
                     if not self._is_current(job.epoch):
                         break
                     engine.play_wav(wav, blocking=True)
@@ -459,6 +499,7 @@ def open_path(path):
 def initialize_tts():
     print(f"WoW Story Voice v{VERSION}")
     print("Transport: WSV6 binary RGB + chunk reassembly")
+    print("Speech: persistent NPC identity + context-aware emotion delivery")
     print("Preparing local TTS...")
     engine.ensure_models()
     kokoro = engine.Kokoro(str(engine.MODEL), str(engine.VOICES))
