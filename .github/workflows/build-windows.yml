@@ -39,6 +39,7 @@ jobs:
           python Companion/test_beta.py
           python Companion/test_speaker_performance.py
           python Companion/test_speaker_indicator.py
+          python Companion/test_latency.py
           python -m py_compile Companion/companion.py Companion/runtime.py Companion/app.py Companion/voice_profiles.py Companion/emotion_profiles.py Companion/beta_hardening.py Companion/speaker_performance.py
       - name: Locate espeak-ng data
         id: espeak
