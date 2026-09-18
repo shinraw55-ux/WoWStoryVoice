@@ -35,7 +35,8 @@ jobs:
         run: |
           python Companion/test_protocol.py
           python Companion/test_app.py
-          python -m py_compile Companion/companion.py Companion/runtime.py Companion/app.py
+          python Companion/test_emotion.py
+          python -m py_compile Companion/companion.py Companion/runtime.py Companion/app.py Companion/voice_profiles.py Companion/emotion_profiles.py
       - name: Locate espeak-ng data
         id: espeak
         shell: pwsh
