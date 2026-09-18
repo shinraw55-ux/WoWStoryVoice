@@ -132,7 +132,10 @@ class CompanionGUI:
         else:
             self.addon_var.set(f"Addon: {av}")
         speech = "speaking" if snap["speaking"] else "idle"
-        self.speech_var.set(f"Speech: {speech} · queue {snap['queue_size']} · last: {snap['last_message']}")
+        delivery = snap.get("last_delivery", "neutral")
+        self.speech_var.set(
+            f"Speech: {speech} · emotion {delivery} · queue {snap['queue_size']} · last: {snap['last_message']}"
+        )
         self.update_var.set(f"Update: {snap['update_status']}")
         self.listen_button.configure(text="Pause listening" if snap["listening"] else "Resume listening")
 
