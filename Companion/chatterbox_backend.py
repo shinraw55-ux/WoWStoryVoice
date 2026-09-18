@@ -94,7 +94,15 @@ class ChatterboxBackend:
         return profile_voice_ids()
 
     def reference_path(self, voice):
-        return self.voice_dir / f"{str(voice or '').strip()}.wav"
+        custom = self.voice_dir / f"{str(voice or '').strip()}.wav"
+        if self._valid_reference(custom):
+            return custom
+        try:
+            from voice_reference import ensure_reference
+            return ensure_reference(self.data_dir, voice)
+        except Exception as e:
+            print(f"Reference generation warning for {voice}: {type(e).__name__}: {e}")
+            return custom
 
     def _valid_reference(self, path):
         try:
