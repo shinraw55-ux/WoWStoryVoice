@@ -2,11 +2,13 @@ import re
 import unittest
 from pathlib import Path
 
+import runtime
 import speaker_performance
 
 
 ROOT = Path(__file__).resolve().parents[1]
 CORE = (ROOT / "WoWStoryVoice" / "Core.lua").read_text(encoding="utf-8")
+REQS = (ROOT / "Companion" / "requirements.txt").read_text(encoding="utf-8")
 
 
 class DialogueLatencyTests(unittest.TestCase):
@@ -41,10 +43,19 @@ class DialogueLatencyTests(unittest.TestCase):
         match = re.search(r"local TX_HOLD_SEC = ([0-9.]+)", CORE)
         self.assertIsNotNone(match)
         hold = float(match.group(1))
-        # Companion currently polls at 40 ms. Keep at least ~3 samples/chunk.
         self.assertGreaterEqual(hold, 0.12)
 
-    def test_audible_speaker_preroll_is_opt_in(self):
+    def test_tts_fast_start_chunks_are_bounded(self):
+        self.assertLessEqual(runtime.FAST_TTS_SEGMENT_CHARS, 140)
+        sample = "This is a deliberately long line of dialogue " * 12
+        chunks = runtime.engine.split_dialogue(sample, limit=runtime.FAST_TTS_SEGMENT_CHARS)
+        self.assertGreater(len(chunks), 1)
+        self.assertTrue(all(len(chunk) <= runtime.FAST_TTS_SEGMENT_CHARS for chunk in chunks))
+
+    def test_gpu_extra_is_requested(self):
+        self.assertIn("kokoro-onnx[gpu]", REQS)
+
+    def test_audible_speaker_preroll_uses_new_opt_in_key(self):
         class Settings(dict):
             def setdefault(self, key, default=None):
                 return super().setdefault(key, default)
@@ -55,7 +66,7 @@ class DialogueLatencyTests(unittest.TestCase):
 
         class Runtime:
             _speaker_performance_configured = False
-            SETTINGS = Settings()
+            SETTINGS = Settings({"announce_speaker": True})
             STATE = State()
 
             class emotion_profiles:
@@ -72,7 +83,8 @@ class DialogueLatencyTests(unittest.TestCase):
                 return name
 
         speaker_performance.configure_runtime(Runtime, Voices)
-        self.assertFalse(Runtime.SETTINGS["announce_speaker"])
+        self.assertFalse(Runtime.SETTINGS["spoken_speaker_name"])
+        self.assertTrue(Runtime.SETTINGS["announce_speaker"])
 
 
 if __name__ == "__main__":
