@@ -1,3 +1,4 @@
+import ctypes
 import hashlib
 import os
 import sys
@@ -15,25 +16,41 @@ if sys.platform == "win32":
 else:
     winsound = None
 
-VERSION = "0.4.3"
-MAGIC = b"WSV4"
-PIXEL_SIZE = 5
-X0, Y0 = 20, 20
-MAX_PACKET = 103
-SEARCH_HEIGHT = 350
-SEARCH_WIDTH = 1800
-CELL_SIZES = (4, 5, 6, 7)
-SEARCH_INTERVAL = 2.0
+VERSION = "0.5.0"
+MAGIC = b"WSV5"
+
+# The addon draws one RGB cell per 3 bits. Each byte therefore uses 3 cells.
+# Only full-off/full-on channel values are used so gamma/color management
+# cannot change the encoded bit identity.
+CELLS_PER_BYTE = 3
+MAX_PAYLOAD = 96
+MAX_PACKET = 4 + 1 + 1 + MAX_PAYLOAD + 1
+MAX_CELLS = MAX_PACKET * CELLS_PER_BYTE
+
+# Physical cell size after WoW UI scaling can vary, so detection checks several
+# plausible rendered sizes. The addon itself asks for 5 physical px.
+CELL_SIZES = (3, 4, 5, 6, 7)
+SEARCH_HEIGHT = 420
+SEARCH_WIDTH = 2200
+SEARCH_INTERVAL = 1.5
 DIAG_INTERVAL = 5.0
+BIT_THRESHOLD = 128
 
 MODEL_URL = "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.1/kokoro-v1.0.onnx"
 VOICES_URL = "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.1/voices-v1.0.bin"
 PREFERRED = ["af_heart", "af_bella", "af_nicole", "af_sarah", "am_adam", "am_michael"]
 
-HEADER_LEVELS = []
-for _b in MAGIC:
-    HEADER_LEVELS.extend([((_b >> 4) & 0x0F) * 17, (_b & 0x0F) * 17])
-HEADER_LEVELS = np.array(HEADER_LEVELS, dtype=np.float32)
+
+def _byte_to_cells(value):
+    bits = [((value >> shift) & 1) for shift in range(7, -1, -1)]
+    bits.append(0)
+    return [bits[i:i + 3] for i in range(0, 9, 3)]
+
+
+HEADER_BITS = np.array(
+    [cell for value in MAGIC for cell in _byte_to_cells(value)],
+    dtype=np.uint8,
+)
 
 
 def data_dir():
@@ -85,7 +102,7 @@ def decode(raw):
     if raw is None or len(raw) < 7 or raw[:4] != MAGIC:
         return None
     seq, ln = raw[4], raw[5]
-    if ln > 96 or 6 + ln >= len(raw):
+    if ln > MAX_PAYLOAD or 6 + ln >= len(raw):
         return None
     payload = raw[6:6 + ln]
     if sum(payload) % 256 != raw[6 + ln]:
@@ -97,7 +114,7 @@ def decode(raw):
     return seq, kind, npc, text
 
 
-def _cell_level(img, cell_index, cell_size):
+def _decode_cell_bits(img, cell_index, cell_size):
     x0 = cell_index * cell_size
     margin = 1 if cell_size >= 4 else 0
     patch = img[
@@ -105,19 +122,41 @@ def _cell_level(img, cell_index, cell_size):
         x0 + margin:max(x0 + margin + 1, x0 + cell_size - margin),
         :3,
     ]
-    gray = float(np.median(patch))
-    return max(0, min(15, int(round(gray / 17.0))))
+    if patch.size == 0:
+        raise ValueError("empty bridge cell")
+
+    # mss returns BGRA. Median over the interior makes edge interpolation
+    # irrelevant; convert BGR -> RGB before thresholding.
+    med_bgr = np.median(patch, axis=(0, 1))
+    r, g, b = float(med_bgr[2]), float(med_bgr[1]), float(med_bgr[0])
+    return (
+        1 if r >= BIT_THRESHOLD else 0,
+        1 if g >= BIT_THRESHOLD else 0,
+        1 if b >= BIT_THRESHOLD else 0,
+    )
 
 
-def sample_packet_at(sct, left, top, cell_size=PIXEL_SIZE):
-    cell_count = MAX_PACKET * 2
-    width = cell_count * cell_size
-    img = np.array(sct.grab({"left": int(left), "top": int(top), "width": int(width), "height": int(cell_size)}))
+def sample_packet_at(sct, left, top, cell_size):
+    width = MAX_CELLS * cell_size
+    img = np.array(sct.grab({
+        "left": int(left),
+        "top": int(top),
+        "width": int(width),
+        "height": int(cell_size),
+    }))
+
     out = bytearray()
-    for i in range(MAX_PACKET):
-        hi = _cell_level(img, i * 2, cell_size)
-        lo = _cell_level(img, i * 2 + 1, cell_size)
-        out.append((hi << 4) | lo)
+    for byte_index in range(MAX_PACKET):
+        bits = []
+        base = byte_index * CELLS_PER_BYTE
+        for cell_offset in range(CELLS_PER_BYTE):
+            bits.extend(_decode_cell_bits(img, base + cell_offset, cell_size))
+
+        value = 0
+        for bit in bits[:8]:
+            value = (value << 1) | bit
+        out.append(value)
+
     return bytes(out)
 
 
@@ -128,25 +167,11 @@ def _monitor_list(sct):
     return monitors
 
 
-def _try_expected_positions(sct):
-    for mon in _monitor_list(sct):
-        for cell_size in CELL_SIZES:
-            left = mon["left"] + X0
-            top = mon["top"] + Y0
-            try:
-                raw = sample_packet_at(sct, left, top, cell_size)
-            except Exception:
-                continue
-            if decode(raw):
-                return (left, top, cell_size), raw
-    return None, None
-
-
 def _scan_monitor(sct, mon):
     width = min(int(mon["width"]), SEARCH_WIDTH)
     height = min(int(mon["height"]), SEARCH_HEIGHT)
-    if width < 100 or height < 20:
-        return None, None
+    if width < 200 or height < 20:
+        return None, None, None
 
     shot = np.array(sct.grab({
         "left": int(mon["left"]),
@@ -154,21 +179,28 @@ def _scan_monitor(sct, mon):
         "width": width,
         "height": height,
     }))
-    gray = shot[:, :, :3].mean(axis=2).astype(np.float32)
+
+    # BGRA -> RGB and then binary channel values. We intentionally compare
+    # only black/fully-lit channel states, not intermediate grayscale.
+    rgb_bits = (shot[:, :, [2, 1, 0]] >= BIT_THRESHOLD).astype(np.uint8)
+
+    best_score = None
+    best_hint = None
 
     for cell_size in CELL_SIZES:
         center = cell_size // 2
-        offsets = np.arange(len(HEADER_LEVELS), dtype=np.int32) * cell_size + center
+        offsets = np.arange(len(HEADER_BITS), dtype=np.int32) * cell_size + center
         max_start = width - int(offsets[-1]) - 1
         if max_start <= 0:
             continue
 
-        score = np.zeros((height, max_start), dtype=np.float32)
-        for off, target in zip(offsets, HEADER_LEVELS):
-            score += np.abs(gray[:, off:off + max_start] - target)
+        score = np.zeros((height, max_start), dtype=np.uint8)
+        for off, target_bits in zip(offsets, HEADER_BITS):
+            sample = rgb_bits[:, off:off + max_start, :]
+            score += np.sum(sample != target_bits, axis=2).astype(np.uint8)
 
         flat = score.ravel()
-        candidate_count = min(16, flat.size)
+        candidate_count = min(64, flat.size)
         if candidate_count <= 0:
             continue
         idxs = np.argpartition(flat, candidate_count - 1)[:candidate_count]
@@ -176,45 +208,67 @@ def _scan_monitor(sct, mon):
 
         for idx in idxs:
             y, x = np.unravel_index(int(idx), score.shape)
+            this_score = int(score[y, x])
+            if best_score is None or this_score < best_score:
+                best_score = this_score
+                best_hint = (
+                    int(mon["left"]) + int(x),
+                    int(mon["top"]) + int(y),
+                    cell_size,
+                )
+
+            # The four-byte header contains 36 RGB bits. More than four
+            # mismatches is not a credible WSV5 candidate.
+            if this_score > 4:
+                break
+
             for delta_y in range(cell_size):
                 top_local = int(y) - delta_y
                 if top_local < 0 or top_local + cell_size > height:
                     continue
+
                 left = int(mon["left"]) + int(x)
                 top = int(mon["top"]) + top_local
                 try:
                     raw = sample_packet_at(sct, left, top, cell_size)
                 except Exception:
                     continue
-                if decode(raw):
-                    return (left, top, cell_size), raw
 
-    return None, None
+                if decode(raw):
+                    return (left, top, cell_size), raw, (best_score, best_hint)
+
+    return None, None, (best_score, best_hint)
 
 
 def find_bridge(sct):
-    pos, raw = _try_expected_positions(sct)
-    if raw:
-        return pos, raw
-
+    best = None
     for mon in _monitor_list(sct):
-        pos, raw = _scan_monitor(sct, mon)
+        pos, raw, diag = _scan_monitor(sct, mon)
         if raw:
-            return pos, raw
-    return None, None
+            return pos, raw, diag
+        if diag and diag[0] is not None and (best is None or diag[0] < best[0]):
+            best = diag
+    return None, None, best
 
 
-def diagnostic_header(sct):
-    lines = []
-    for index, mon in enumerate(_monitor_list(sct), start=1):
-        left = mon["left"] + X0
-        top = mon["top"] + Y0
-        try:
-            raw = sample_packet_at(sct, left, top, PIXEL_SIZE)
-            lines.append(f"monitor {index} @ ({left},{top}): {raw[:8].hex(' ')}")
-        except Exception as e:
-            lines.append(f"monitor {index}: capture failed: {e}")
-    return " | ".join(lines)
+def diagnostic_bridge(best):
+    if not best or best[0] is None:
+        return "no bridge-like header found"
+    score, hint = best
+    return f"best WSV5 header score={score}/36 near {hint}"
+
+
+def minimize_console():
+    if sys.platform != "win32":
+        return
+    try:
+        hwnd = ctypes.windll.kernel32.GetConsoleWindow()
+        if hwnd:
+            # SW_MINIMIZE = 6. This prevents the companion window from
+            # covering the pixels it is trying to screen-capture.
+            ctypes.windll.user32.ShowWindow(hwnd, 6)
+    except Exception as e:
+        print(f"Console auto-minimize failed: {type(e).__name__}: {e}")
 
 
 def choose_voice(npc, available):
@@ -247,7 +301,7 @@ def synthesize_to_wav(kokoro, voice, text, wav):
 
 def audio_self_test(kokoro, available):
     voice = choose_voice("Narrator", available)
-    wav = CACHE / "audio-self-test-v0.4.3.wav"
+    wav = CACHE / f"audio-self-test-v{VERSION}.wav"
     print("Audio self-test: generating speech...")
     if not wav.exists():
         sr, frames, peak = synthesize_to_wav(
@@ -261,6 +315,7 @@ def audio_self_test(kokoro, available):
         data, sr = sf.read(wav, dtype="float32")
         peak = float(np.max(np.abs(data))) if len(data) else 0.0
         print(f"Audio self-test cache: {len(data)} frames @ {sr} Hz, peak {peak:.3f}")
+
     print("Audio self-test: playing through Windows default output...")
     play_wav(wav, blocking=True)
     print("Audio self-test finished.")
@@ -280,8 +335,10 @@ def speak(kokoro, available, kind, npc, text):
 
 def main():
     print(f"WoW Story Voice v{VERSION}")
+    print("Transport: WSV5 binary RGB")
     print("First launch downloads the local Kokoro model. No Python installation is required.")
     ensure_models()
+
     print("Loading local TTS...")
     kokoro = Kokoro(str(MODEL), str(VOICES))
     available = kokoro.get_voices()
@@ -292,12 +349,16 @@ def main():
     except Exception as e:
         print(f"AUDIO SELF-TEST FAILED: {type(e).__name__}: {e}")
 
-    print("Ready. Start WoW and use /wsv test.")
+    print("Ready. The console will minimize so it cannot cover the WoW bridge.")
+    print("Use /wsv test in WoW. Restore this window later to read diagnostics.")
+    time.sleep(1.0)
+    minimize_console()
 
     last = None
     bridge_pos = None
     last_search = 0.0
     last_diag = 0.0
+    best_diag = None
 
     with mss.MSS() as sct:
         while True:
@@ -306,7 +367,11 @@ def main():
 
                 if bridge_pos:
                     left, top, cell_size = bridge_pos
-                    raw = sample_packet_at(sct, left, top, cell_size)
+                    try:
+                        raw = sample_packet_at(sct, left, top, cell_size)
+                    except Exception:
+                        raw = None
+
                     if not decode(raw):
                         bridge_pos = None
                         raw = None
@@ -314,13 +379,16 @@ def main():
                 now = time.time()
                 if not bridge_pos and now - last_search >= SEARCH_INTERVAL:
                     last_search = now
-                    bridge_pos, raw = find_bridge(sct)
+                    bridge_pos, raw, best_diag = find_bridge(sct)
                     if bridge_pos:
-                        print(f"Bridge detected at screen position {bridge_pos[:2]}, cell size {bridge_pos[2]} px.")
+                        print(
+                            f"Bridge detected at screen position {bridge_pos[:2]}, "
+                            f"cell size {bridge_pos[2]} px."
+                        )
 
                 if not bridge_pos and now - last_diag >= DIAG_INTERVAL:
                     last_diag = now
-                    print("Waiting for bridge. Raw header sample:", diagnostic_header(sct))
+                    print("Waiting for bridge.", diagnostic_bridge(best_diag))
 
                 msg = decode(raw) if raw else None
                 if msg and msg[0] != last:
