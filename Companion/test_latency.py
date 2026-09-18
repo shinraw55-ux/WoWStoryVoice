@@ -52,8 +52,9 @@ class DialogueLatencyTests(unittest.TestCase):
         self.assertGreater(len(chunks), 1)
         self.assertTrue(all(len(chunk) <= runtime.FAST_TTS_SEGMENT_CHARS for chunk in chunks))
 
-    def test_gpu_extra_is_requested(self):
-        self.assertIn("kokoro-onnx[gpu]", REQS)
+    def test_chatterbox_turbo_is_requested(self):
+        self.assertIn("chatterbox-tts==0.1.7", REQS)
+        self.assertNotIn("kokoro-onnx[gpu]", REQS)
 
     def test_audible_speaker_preroll_uses_new_opt_in_key(self):
         class Settings(dict):
