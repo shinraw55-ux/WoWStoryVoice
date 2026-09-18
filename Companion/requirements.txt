@@ -1,6 +1,6 @@
 mss
 numpy
 soundfile
-kokoro-onnx
+kokoro-onnx[gpu]
 pystray
 Pillow
