@@ -3,6 +3,7 @@ import hashlib
 import json
 import os
 import queue
+import re
 import sys
 import threading
 import time
@@ -20,10 +21,10 @@ if sys.platform == "win32":
 else:
     winsound = None
 
-VERSION = "0.6.0"
+VERSION = "0.7.0"
 MAGIC = b"WSV6"
 
-# WSV6 keeps the live-verified binary RGB pixel encoding from v0.5.0.
+# WSV6 keeps the live-verified binary RGB transport from v0.5/v0.6.
 CELLS_PER_BYTE = 3
 MAX_PACKET = 103
 CHUNK_DATA_MAX = 91
@@ -38,6 +39,7 @@ BIT_THRESHOLD = 128
 ASSEMBLY_TIMEOUT = 15.0
 COMPLETED_ID_TTL = 30.0
 CONTENT_DEDUPE_TTL = 8.0
+MAX_TTS_SEGMENT_CHARS = 360
 
 MODEL_URL = "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.1/kokoro-v1.0.onnx"
 VOICES_URL = "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.1/voices-v1.0.bin"
@@ -69,6 +71,7 @@ CACHE.mkdir(exist_ok=True)
 MODEL = Path(os.environ.get("WSV_MODEL", DATA / "kokoro-v1.0.onnx"))
 VOICES = Path(os.environ.get("WSV_VOICES", DATA / "voices-v1.0.bin"))
 VOICE_MAP = DATA / "voice-map.json"
+SELF_TEST_MARKER = DATA / f"audio-self-test-ok-v{VERSION}.txt"
 
 
 def download(url, dest, label):
@@ -275,7 +278,7 @@ def minimize_console():
     try:
         hwnd = ctypes.windll.kernel32.GetConsoleWindow()
         if hwnd:
-            ctypes.windll.user32.ShowWindow(hwnd, 6)  # SW_MINIMIZE
+            ctypes.windll.user32.ShowWindow(hwnd, 6)
     except Exception as e:
         print(f"Console auto-minimize failed: {type(e).__name__}: {e}")
 
@@ -294,8 +297,94 @@ def stop_audio():
         winsound.PlaySound(None, 0)
 
 
-def synthesize_to_wav(kokoro, voice, text, wav):
-    audio, sr = kokoro.create(text, voice=voice, speed=1.0, lang="en-us")
+def clean_dialogue_text(text):
+    """Remove WoW UI markup without rewriting the actual dialogue."""
+    if not text:
+        return ""
+    text = str(text)
+    text = re.sub(r"\|H[^|]*\|h(.*?)\|h", r"\1", text, flags=re.DOTALL)
+    text = re.sub(r"\|T[^|]*\|t", " ", text)
+    text = re.sub(r"\|A[^|]*\|a", " ", text)
+    text = re.sub(r"\|c[0-9A-Fa-f]{8}", "", text)
+    text = text.replace("|r", "")
+    text = re.sub(r"\{(?:rt\d+|star|circle|diamond|triangle|moon|square|cross|skull)\}", " ", text, flags=re.IGNORECASE)
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    text = re.sub(r"[\t\f\v]+", " ", text)
+    text = re.sub(r"[ ]{2,}", " ", text)
+    text = re.sub(r" *\n *", "\n", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()
+
+
+def _split_long_piece(piece, limit):
+    piece = piece.strip()
+    if not piece:
+        return []
+    if len(piece) <= limit:
+        return [piece]
+
+    result = []
+    remaining = piece
+    while len(remaining) > limit:
+        window = remaining[: limit + 1]
+        cut = max(window.rfind("; "), window.rfind(": "), window.rfind(", "), window.rfind(" "))
+        if cut < max(40, limit // 2):
+            cut = limit
+        else:
+            cut += 1
+        result.append(remaining[:cut].strip())
+        remaining = remaining[cut:].strip()
+    if remaining:
+        result.append(remaining)
+    return result
+
+
+def split_dialogue(text, limit=MAX_TTS_SEGMENT_CHARS):
+    """Split long speech at paragraph/sentence boundaries for stable TTS pacing."""
+    cleaned = clean_dialogue_text(text)
+    if not cleaned:
+        return []
+
+    segments = []
+    paragraphs = re.split(r"\n+", cleaned)
+    for paragraph in paragraphs:
+        paragraph = paragraph.strip()
+        if not paragraph:
+            continue
+        pieces = re.split(r"(?<=[.!?…])\s+(?=[\"'“‘(\[]?[A-Z0-9À-ÖØ-Þ])", paragraph)
+        for piece in pieces:
+            segments.extend(_split_long_piece(piece, limit))
+    return segments
+
+
+def prosody_for_segment(kind, text):
+    """Conservative pacing hints; punctuation remains the main prosody signal."""
+    kind = (kind or "").casefold()
+    speed = 1.0
+    pause = 0.08
+    stripped = text.rstrip()
+
+    if kind == "monster_yell":
+        speed = 1.03
+    elif kind in ("quest", "reward", "progress", "greeting"):
+        speed = 0.98
+
+    if stripped.endswith("...") or stripped.endswith("…"):
+        pause = 0.20
+        speed = min(speed, 0.96)
+    elif stripped.endswith("?"):
+        pause = 0.12
+        speed = min(speed, 0.98)
+    elif stripped.endswith("!"):
+        pause = 0.10
+    elif stripped.endswith((".", ":", ";")):
+        pause = 0.10
+
+    return round(speed, 3), pause
+
+
+def synthesize_to_wav(kokoro, voice, text, wav, speed=1.0):
+    audio, sr = kokoro.create(text, voice=voice, speed=speed, lang="en-us")
     audio = np.asarray(audio, dtype=np.float32).reshape(-1)
     if audio.size == 0:
         raise RuntimeError("Kokoro returned an empty audio buffer")
@@ -306,29 +395,6 @@ def synthesize_to_wav(kokoro, voice, text, wav):
     return sr, audio.size, peak
 
 
-def audio_self_test(kokoro, available):
-    registry = VoiceRegistry(available)
-    voice = registry.voice_for("", "Narrator")
-    wav = CACHE / f"audio-self-test-v{VERSION}.wav"
-    print("Audio self-test: generating speech...")
-    if not wav.exists():
-        sr, frames, peak = synthesize_to_wav(
-            kokoro,
-            voice,
-            "WoW Story Voice audio test. Local speech and Windows audio are working.",
-            wav,
-        )
-        print(f"Audio self-test generated: {frames} frames @ {sr} Hz, peak {peak:.3f}")
-    else:
-        data, sr = sf.read(wav, dtype="float32")
-        peak = float(np.max(np.abs(data))) if len(data) else 0.0
-        print(f"Audio self-test cache: {len(data)} frames @ {sr} Hz, peak {peak:.3f}")
-
-    print("Audio self-test: playing through Windows default output...")
-    play_wav(wav, blocking=True)
-    print("Audio self-test finished.")
-
-
 def _voice_identity(npc_guid, npc_name):
     if npc_guid:
         parts = npc_guid.split("-")
@@ -336,6 +402,12 @@ def _voice_identity(npc_guid, npc_name):
             return f"npc:{parts[5]}"
         return f"guid:{npc_guid}"
     return f"name:{(npc_name or 'Narrator').strip().casefold()}"
+
+
+def dialogue_dedupe_key(npc_guid, npc_name, text):
+    identity = _voice_identity(npc_guid, npc_name)
+    normalized = re.sub(r"\s+", " ", clean_dialogue_text(text)).strip().casefold()
+    return hashlib.sha256((identity + "\0" + normalized).encode("utf-8")).hexdigest()
 
 
 class VoiceRegistry:
@@ -382,6 +454,31 @@ class VoiceRegistry:
         return voice
 
 
+def audio_self_test(kokoro, available):
+    registry = VoiceRegistry(available)
+    voice = registry.voice_for("", "Narrator")
+    wav = CACHE / f"audio-self-test-v{VERSION}.wav"
+    print("Audio self-test: generating speech...")
+    if not wav.exists():
+        sr, frames, peak = synthesize_to_wav(
+            kokoro,
+            voice,
+            "WoW Story Voice audio test. Local speech and Windows audio are working.",
+            wav,
+            speed=1.0,
+        )
+        print(f"Audio self-test generated: {frames} frames @ {sr} Hz, peak {peak:.3f}")
+    else:
+        data, sr = sf.read(wav, dtype="float32")
+        peak = float(np.max(np.abs(data))) if len(data) else 0.0
+        print(f"Audio self-test cache: {len(data)} frames @ {sr} Hz, peak {peak:.3f}")
+
+    print("Audio self-test: playing through Windows default output...")
+    play_wav(wav, blocking=True)
+    SELF_TEST_MARKER.write_text("ok\n", encoding="ascii")
+    print("Audio self-test finished.")
+
+
 @dataclass(frozen=True)
 class SpeechJob:
     epoch: int
@@ -402,10 +499,13 @@ class SpeechController:
         self.thread.start()
 
     def enqueue(self, kind, npc_guid, npc_name, text):
+        cleaned = clean_dialogue_text(text)
+        if not cleaned:
+            return
         with self.lock:
             epoch = self.epoch
-        self.jobs.put(SpeechJob(epoch, kind, npc_guid, npc_name, text))
-        print(f"Speech queued: [{kind}] {npc_name} ({len(text.encode('utf-8'))} bytes)")
+        self.jobs.put(SpeechJob(epoch, kind, npc_guid, npc_name, cleaned))
+        print(f"Speech queued: [{kind}] {npc_name} ({len(cleaned.encode('utf-8'))} bytes)")
 
     def stop_and_clear(self):
         with self.lock:
@@ -431,21 +531,39 @@ class SpeechController:
                     continue
 
                 voice = self.registry.voice_for(job.npc_guid, job.npc_name)
-                key = hashlib.sha256((voice + "\0" + job.text).encode("utf-8")).hexdigest()
-                wav = CACHE / f"{key}.wav"
-
-                if not wav.exists():
-                    sr, frames, peak = synthesize_to_wav(self.kokoro, voice, job.text, wav)
-                    print(
-                        f"TTS generated: [{job.kind}] {job.npc_name}, "
-                        f"voice={voice}, {frames} frames @ {sr} Hz, peak {peak:.3f}"
-                    )
-
-                if not self._is_current(job.epoch):
+                segments = split_dialogue(job.text)
+                if not segments:
                     continue
 
-                print(f"Playing: [{job.kind}] {job.npc_name}, voice={voice}")
-                play_wav(wav, blocking=True)
+                print(
+                    f"Speaking: [{job.kind}] {job.npc_name}, voice={voice}, "
+                    f"segments={len(segments)}"
+                )
+
+                for index, segment in enumerate(segments, start=1):
+                    if not self._is_current(job.epoch):
+                        break
+
+                    speed, pause = prosody_for_segment(job.kind, segment)
+                    key_material = f"{voice}\0{speed:.3f}\0{segment}".encode("utf-8")
+                    wav = CACHE / f"{hashlib.sha256(key_material).hexdigest()}.wav"
+
+                    if not wav.exists():
+                        sr, frames, peak = synthesize_to_wav(
+                            self.kokoro, voice, segment, wav, speed=speed
+                        )
+                        print(
+                            f"TTS generated: [{job.kind}] {job.npc_name}, "
+                            f"segment={index}/{len(segments)}, speed={speed:.2f}, "
+                            f"{frames} frames @ {sr} Hz, peak {peak:.3f}"
+                        )
+
+                    if not self._is_current(job.epoch):
+                        break
+
+                    play_wav(wav, blocking=True)
+                    if pause > 0 and self._is_current(job.epoch):
+                        time.sleep(pause)
             except Exception as e:
                 print(f"Speech worker error: {type(e).__name__}: {e}")
             finally:
@@ -509,29 +627,34 @@ class Reassembler:
         del self.messages[msg_id]
         self.completed_ids[msg_id] = now
 
-        digest = hashlib.sha256(payload).hexdigest()
-        previous = self.recent_content.get(digest)
-        self.recent_content[digest] = now
-        if previous is not None and now - previous <= CONTENT_DEDUPE_TTL:
-            print(f"Duplicate dialogue suppressed: message {msg_id}")
-            return None
-
         try:
             kind, npc_guid, npc_name, text = payload.decode("utf-8").split("\x1f", 3)
         except (UnicodeDecodeError, ValueError):
             print(f"Invalid reassembled payload: message {msg_id}")
             return None
 
+        cleaned = clean_dialogue_text(text)
+        if not cleaned and kind != "control":
+            return None
+
+        digest = dialogue_dedupe_key(npc_guid, npc_name, cleaned)
+        previous = self.recent_content.get(digest)
+        self.recent_content[digest] = now
+        if kind != "control" and previous is not None and now - previous <= CONTENT_DEDUPE_TTL:
+            print(f"Duplicate dialogue suppressed: message {msg_id}")
+            return None
+
         print(
             f"Message reassembled: id={msg_id}, chunks={chunk_total}, "
-            f"kind={kind}, npc={npc_name}, text_bytes={len(text.encode('utf-8'))}"
+            f"kind={kind}, npc={npc_name}, text_bytes={len(cleaned.encode('utf-8'))}"
         )
-        return kind, npc_guid, npc_name, text
+        return kind, npc_guid, npc_name, cleaned
 
 
 def main():
     print(f"WoW Story Voice v{VERSION}")
     print("Transport: WSV6 binary RGB + chunk reassembly")
+    print("Speech: persistent NPC voices + queued segmented prosody")
     print("First launch downloads the local Kokoro model. No Python installation is required.")
     ensure_models()
 
@@ -540,10 +663,13 @@ def main():
     available = kokoro.get_voices()
     print(f"Kokoro ready. {len(available)} voices available.")
 
-    try:
-        audio_self_test(kokoro, available)
-    except Exception as e:
-        print(f"AUDIO SELF-TEST FAILED: {type(e).__name__}: {e}")
+    if not SELF_TEST_MARKER.exists():
+        try:
+            audio_self_test(kokoro, available)
+        except Exception as e:
+            print(f"AUDIO SELF-TEST FAILED: {type(e).__name__}: {e}")
+    else:
+        print("Audio self-test already passed for this version; skipping startup playback.")
 
     speech = SpeechController(kokoro, available)
     reassembler = Reassembler()
