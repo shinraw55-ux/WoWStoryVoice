@@ -90,6 +90,9 @@ class ChatterboxBackend:
         if self._builtin_conds is None:
             raise RuntimeError("Chatterbox Turbo did not provide built-in voice conditionals")
 
+    def profile_voice_ids(self):
+        return profile_voice_ids()
+
     def reference_path(self, voice):
         return self.voice_dir / f"{str(voice or '').strip()}.wav"
 
