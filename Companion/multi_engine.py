@@ -11,7 +11,8 @@ def configure_runtime(runtime_module):
     runtime_module.SETTINGS.setdefault("tts_engine", tts_registry.DEFAULT_ENGINE)
     runtime_module.SETTINGS["tts_engine"] = tts_registry.normalize_engine(runtime_module.SETTINGS["tts_engine"])
     if not tts_registry.SPECS[runtime_module.SETTINGS["tts_engine"]].bundled:
-        print(f"Configured external TTS {runtime_module.SETTINGS[\'tts_engine\']} is not bundled; falling back to {tts_registry.DEFAULT_ENGINE}.")
+        old_engine = runtime_module.SETTINGS["tts_engine"]
+        print(f"Configured external TTS {old_engine} is not bundled; falling back to {tts_registry.DEFAULT_ENGINE}.")
         runtime_module.SETTINGS["tts_engine"] = tts_registry.DEFAULT_ENGINE
     runtime_module.save_settings(runtime_module.SETTINGS)
 
