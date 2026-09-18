@@ -21,15 +21,24 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: "3.11"
           cache: pip
           cache-dependency-path: Companion/requirements.txt
       - name: Install dependencies
         shell: pwsh
         run: |
-          python -m pip install --upgrade pip
+          python -m pip install --upgrade pip setuptools wheel
+          # Chatterbox 0.1.7 pins torch 2.6.0. Install the official CUDA 12.4
+          # wheels explicitly so the packaged companion can use NVIDIA GPUs.
+          pip install torch==2.6.0 torchvision==0.21.0 torchaudio==2.6.0 --index-url https://download.pytorch.org/whl/cu124
           pip install -r Companion/requirements.txt
+          # companion.py remains the proven WSV6 transport module and still has
+          # a legacy Kokoro import. Keep only the import-time compatibility
+          # package for this experimental build; Kokoro is not the active TTS.
+          pip install --no-deps kokoro-onnx==0.6.1
+          pip install espeakng-loader phonemizer onnxruntime
           pip install pyinstaller
+          python -c "import torch; print('torch', torch.__version__, 'cuda build', torch.version.cuda); from chatterbox.tts_turbo import ChatterboxTurboTTS; print('Chatterbox Turbo import OK')"
       - name: Run regression and package tests
         shell: pwsh
         run: |
@@ -40,7 +49,8 @@ jobs:
           python Companion/test_speaker_performance.py
           python Companion/test_speaker_indicator.py
           python Companion/test_latency.py
-          python -m py_compile Companion/companion.py Companion/runtime.py Companion/app.py Companion/voice_profiles.py Companion/emotion_profiles.py Companion/beta_hardening.py Companion/speaker_performance.py
+          python Companion/test_chatterbox.py
+          python -m py_compile Companion/companion.py Companion/runtime.py Companion/app.py Companion/voice_profiles.py Companion/emotion_profiles.py Companion/beta_hardening.py Companion/speaker_performance.py Companion/chatterbox_backend.py Companion/chatterbox_patch.py
       - name: Locate espeak-ng data
         id: espeak
         shell: pwsh
@@ -51,7 +61,7 @@ jobs:
       - name: Build GUI companion folder
         shell: pwsh
         run: |
-          pyinstaller --noconfirm --clean --onedir --noupx --windowed --name WoWStoryVoice --collect-all kokoro_onnx --collect-all onnxruntime --collect-all espeakng_loader --collect-all pystray Companion/app.py
+          pyinstaller --noconfirm --clean --onedir --noupx --windowed --name WoWStoryVoice --hidden-import chatterbox.tts_turbo --collect-all chatterbox --collect-all perth --collect-all s3tokenizer --collect-all conformer --collect-all kokoro_onnx --collect-all onnxruntime --collect-all espeakng_loader --collect-all pystray Companion/app.py
       - name: Package addon
         shell: pwsh
         run: |
