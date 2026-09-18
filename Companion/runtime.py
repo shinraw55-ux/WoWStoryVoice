@@ -29,6 +29,7 @@ VERSION = "0.8.0"
 UPDATE_MANIFEST_URL = "https://raw.githubusercontent.com/shinraw55-ux/WoWStoryVoice/main/release.json"
 WORKFLOW_URL = "https://github.com/shinraw55-ux/WoWStoryVoice/actions/workflows/build-windows.yml"
 BRIDGE_STALE_SEC = 40.0
+FAST_TTS_SEGMENT_CHARS = 120
 
 DATA = engine.DATA
 CACHE = engine.CACHE
@@ -152,6 +153,7 @@ class SharedState:
             "queue_size": 0,
             "last_message": "—",
             "last_delivery": "neutral",
+            "last_latency_ms": None,
             "last_error": "",
             "update_status": "Not checked",
             "update_url": WORKFLOW_URL,
@@ -190,6 +192,7 @@ class SpeechJob:
     npc_guid: str
     npc_name: str
     text: str
+    enqueued_at: float
 
 
 class SpeechController:
@@ -209,7 +212,7 @@ class SpeechController:
             return
         with self.lock:
             epoch = self.epoch
-        self.jobs.put(SpeechJob(epoch, kind, npc_guid, npc_name, cleaned))
+        self.jobs.put(SpeechJob(epoch, kind, npc_guid, npc_name, cleaned, time.perf_counter()))
         self.state.set(queue_size=self.jobs.qsize(), last_message=f"{npc_name}: {cleaned[:90]}")
         print(f"Speech queued: [{kind}] {npc_name} ({len(cleaned.encode('utf-8'))} bytes)")
 
@@ -236,8 +239,12 @@ class SpeechController:
             try:
                 if not self._is_current(job.epoch):
                     continue
+                queue_wait_ms = (time.perf_counter() - job.enqueued_at) * 1000.0
                 voice = self.registry.voice_for(job.npc_guid, job.npc_name)
-                segments = engine.split_dialogue(job.text)
+                # Shorter chunks materially reduce time-to-first-audio because
+                # Kokoro can begin with a compact phrase instead of waiting for
+                # a very long sentence/paragraph to finish inference.
+                segments = engine.split_dialogue(job.text, limit=FAST_TTS_SEGMENT_CHARS)
                 if not segments:
                     continue
 
@@ -249,9 +256,11 @@ class SpeechController:
                 )
                 print(
                     f"Speaking: [{job.kind}] {job.npc_name}, voice={voice}, "
-                    f"segments={len(segments)}, context_emotion={baseline.name}, score={baseline.score}"
+                    f"segments={len(segments)}, queue_wait={queue_wait_ms:.0f}ms, "
+                    f"context_emotion={baseline.name}, score={baseline.score}"
                 )
 
+                first_audio = True
                 for index, segment in enumerate(segments, start=1):
                     if not self._is_current(job.epoch):
                         break
@@ -276,16 +285,19 @@ class SpeechController:
                     ).encode("utf-8")
                     key = hashlib.sha256(key_material).hexdigest()
                     wav = CACHE / f"{key}.wav"
+                    synth_ms = 0.0
                     if not wav.exists():
+                        synth_started = time.perf_counter()
                         sr, frames, peak = synthesize_to_wav(
                             self.kokoro, voice, segment, wav, speed, volume
                         )
+                        synth_ms = (time.perf_counter() - synth_started) * 1000.0
                         cue_text = ",".join(delivery.cues[:4]) or "none"
                         print(
                             f"TTS generated: [{job.kind}] {job.npc_name}, segment={index}/{len(segments)}, "
                             f"emotion={delivery.emotion}, score={delivery.score}, cues={cue_text}, "
                             f"speed={speed:.2f}, gain={delivery.gain:.2f}, volume={volume:.2f}, "
-                            f"{frames} frames @ {sr} Hz, peak {peak:.3f}"
+                            f"tts={synth_ms:.0f}ms, {frames} frames @ {sr} Hz, peak {peak:.3f}"
                         )
                     else:
                         print(
@@ -295,6 +307,14 @@ class SpeechController:
 
                     if not self._is_current(job.epoch):
                         break
+                    if first_audio:
+                        total_ms = (time.perf_counter() - job.enqueued_at) * 1000.0
+                        self.state.set(last_latency_ms=round(total_ms))
+                        print(
+                            f"AUDIO START: {job.npc_name} total_from_queue={total_ms:.0f}ms "
+                            f"(queue={queue_wait_ms:.0f}ms, first_tts={synth_ms:.0f}ms)"
+                        )
+                        first_audio = False
                     engine.play_wav(wav, blocking=True)
                     if pause > 0 and self._is_current(job.epoch):
                         time.sleep(pause)
@@ -504,5 +524,22 @@ def initialize_tts():
     engine.ensure_models()
     kokoro = engine.Kokoro(str(engine.MODEL), str(engine.VOICES))
     available = kokoro.get_voices()
-    print(f"Kokoro ready. {len(available)} voices available.")
+    try:
+        providers = kokoro.sess.get_providers()
+    except Exception:
+        providers = []
+    print(f"Kokoro ready. {len(available)} voices available. Providers: {providers or ['unknown']}")
+
+    # Warm the inference path before capture starts. The first ONNX invocation
+    # is commonly slower than later calls; paying that cost on the splash screen
+    # prevents the first NPC line from absorbing the cold-start penalty.
+    if available:
+        warm_voice = available[0]
+        started = time.perf_counter()
+        try:
+            audio, _ = kokoro.create("Ready.", voice=warm_voice, speed=1.0, lang="en-us")
+            frames = int(np.asarray(audio).size)
+            print(f"TTS warm-up complete in {(time.perf_counter() - started) * 1000.0:.0f}ms ({frames} frames).")
+        except Exception as e:
+            print(f"TTS warm-up warning: {type(e).__name__}: {e}")
     return kokoro, available
