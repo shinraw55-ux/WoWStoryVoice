@@ -5,13 +5,14 @@ local pixels = {}
 local VERSION = "0.8.0"
 local MAGIC = "WSV6"
 
--- Keep the live-verified WSV6 transport unchanged. NPC voice metadata is
--- carried inside the existing npcGuid field, so the packet layer is untouched.
+-- Keep WSV6 framing unchanged. Latency tuning only changes when already-built
+-- packets are scheduled: fresh dialogue gets one complete pass immediately,
+-- while redundant reliability passes are sent only when no fresh data waits.
 local CELL_PX = 5
 local X_PX = 20
 local Y_PX = 20
 local CHUNK_DATA_MAX = 91
-local TX_HOLD_SEC = 0.16
+local TX_HOLD_SEC = 0.12
 local TX_MIN_WINDOW_SEC = 2.6
 local TX_MIN_ROUNDS = 2
 local HEARTBEAT_SEC = 30
@@ -19,6 +20,8 @@ local HEARTBEAT_SEC = 30
 local messageId = 0
 local txQueue = {}
 local txHead = 1
+local retryQueue = {}
+local retryHead = 1
 local txElapsed = 0
 local currentPacket = nil
 local heartbeatElapsed = HEARTBEAT_SEC
@@ -117,19 +120,32 @@ local function makeChunkPacket(msgId, chunkIndex, chunkTotal, chunkData)
   return MAGIC .. body .. string.char(checksum(body))
 end
 
-local function compactTxQueue()
-  if txHead <= 128 then return end
+local function compactQueue(queue, head)
+  if head <= 128 then return queue, head end
   local remaining = {}
-  for i = txHead, #txQueue do remaining[#remaining + 1] = txQueue[i] end
-  txQueue = remaining
-  txHead = 1
+  for i = head, #queue do remaining[#remaining + 1] = queue[i] end
+  return remaining, 1
+end
+
+local function compactTxQueues()
+  txQueue, txHead = compactQueue(txQueue, txHead)
+  retryQueue, retryHead = compactQueue(retryQueue, retryHead)
 end
 
 local function clearTxQueue()
   txQueue = {}
   txHead = 1
+  retryQueue = {}
+  retryHead = 1
   txElapsed = 0
   currentPacket = nil
+end
+
+local function prependPackets(queue, head, packets)
+  local merged = {}
+  for _, packet in ipairs(packets) do merged[#merged + 1] = packet end
+  for i = head, #queue do merged[#merged + 1] = queue[i] end
+  return merged, 1
 end
 
 local function enqueueMessage(kind, npcGuid, npc, text, priority, quick)
@@ -162,21 +178,19 @@ local function enqueueMessage(kind, npcGuid, npc, text, priority, quick)
     rounds = math.min(rounds, 16)
   end
 
-  local staged = {}
-  for _ = 1, rounds do
-    for _, packet in ipairs(packets) do staged[#staged + 1] = packet end
-  end
-
+  -- First pass is always the latency-sensitive pass. Redundant passes preserve
+  -- one-way loss recovery, but live in a separate queue so a new line never
+  -- waits behind seconds of repeats from an older line.
   if priority then
-    local oldRemaining = {}
-    for i = txHead, #txQueue do oldRemaining[#oldRemaining + 1] = txQueue[i] end
-    txQueue = staged
-    for _, packet in ipairs(oldRemaining) do txQueue[#txQueue + 1] = packet end
-    txHead = 1
+    txQueue, txHead = prependPackets(txQueue, txHead, packets)
     txElapsed = 0
     currentPacket = nil
   else
-    for _, packet in ipairs(staged) do txQueue[#txQueue + 1] = packet end
+    for _, packet in ipairs(packets) do txQueue[#txQueue + 1] = packet end
+  end
+
+  for _ = 2, rounds do
+    for _, packet in ipairs(packets) do retryQueue[#retryQueue + 1] = packet end
   end
 end
 
@@ -184,21 +198,44 @@ local function queueHeartbeat()
   enqueueMessage("control", "", "Narrator", "hello|" .. VERSION, false, true)
 end
 
+local function hasFreshPackets()
+  return txHead <= #txQueue
+end
+
+local function hasRetryPackets()
+  return retryHead <= #retryQueue
+end
+
+local function nextPacket()
+  if hasFreshPackets() then
+    local packet = txQueue[txHead]
+    txHead = txHead + 1
+    return packet
+  end
+  if hasRetryPackets() then
+    local packet = retryQueue[retryHead]
+    retryHead = retryHead + 1
+    return packet
+  end
+  return nil
+end
+
 WSV:SetScript("OnUpdate", function(_, elapsed)
   heartbeatElapsed = heartbeatElapsed + elapsed
-  if heartbeatElapsed >= HEARTBEAT_SEC and txHead > #txQueue then
+  if heartbeatElapsed >= HEARTBEAT_SEC and not hasFreshPackets() and not hasRetryPackets() then
     heartbeatElapsed = 0
     queueHeartbeat()
   end
 
-  if txHead > #txQueue then
-    compactTxQueue()
+  if not hasFreshPackets() and not hasRetryPackets() then
+    compactTxQueues()
     return
   end
+
   txElapsed = txElapsed + elapsed
   if currentPacket and txElapsed < TX_HOLD_SEC then return end
-  currentPacket = txQueue[txHead]
-  txHead = txHead + 1
+  currentPacket = nextPacket()
+  if not currentPacket then return end
   txElapsed = 0
   emitBytes(currentPacket)
 end)
