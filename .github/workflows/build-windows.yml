@@ -35,19 +35,25 @@ jobs:
           $pkg = python -c "import espeakng_loader, pathlib; print(pathlib.Path(espeakng_loader.__file__).parent)"
           Write-Host "espeakng_loader package: $pkg"
           Get-ChildItem -Recurse $pkg | Select-Object FullName
-      - name: Build EXE
+      - name: Build companion folder
         shell: pwsh
         run: |
-          pyinstaller --noconfirm --clean --onefile --console --name WoWStoryVoice --collect-all kokoro_onnx --collect-all espeakng_loader Companion/companion.py
+          pyinstaller --noconfirm --clean --onedir --noupx --console --name WoWStoryVoice --collect-all kokoro_onnx --collect-all espeakng_loader Companion/companion.py
       - name: Package addon
         shell: pwsh
         run: |
           Compress-Archive -Path WoWStoryVoice -DestinationPath dist/WoWStoryVoice-Addon.zip
+      - name: Create checksums
+        shell: pwsh
+        run: |
+          $exe = Get-FileHash dist/WoWStoryVoice/WoWStoryVoice.exe -Algorithm SHA256
+          "$($exe.Hash)  WoWStoryVoice/WoWStoryVoice.exe" | Out-File -Encoding ascii dist/SHA256SUMS.txt
       - name: Upload Windows package
         uses: actions/upload-artifact@v4
         with:
           name: WoWStoryVoice-Windows
           path: |
-            dist/WoWStoryVoice.exe
+            dist/WoWStoryVoice/**
             dist/WoWStoryVoice-Addon.zip
+            dist/SHA256SUMS.txt
           if-no-files-found: error
