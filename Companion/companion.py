@@ -15,7 +15,7 @@ if sys.platform == "win32":
 else:
     winsound = None
 
-VERSION = "0.4.2"
+VERSION = "0.4.3"
 MAGIC = b"WSV4"
 PIXEL_SIZE = 5
 X0, Y0 = 20, 20
@@ -247,7 +247,7 @@ def synthesize_to_wav(kokoro, voice, text, wav):
 
 def audio_self_test(kokoro, available):
     voice = choose_voice("Narrator", available)
-    wav = CACHE / "audio-self-test-v0.4.2.wav"
+    wav = CACHE / "audio-self-test-v0.4.3.wav"
     print("Audio self-test: generating speech...")
     if not wav.exists():
         sr, frames, peak = synthesize_to_wav(
