@@ -51,7 +51,7 @@ jobs:
       - name: Build GUI companion folder
         shell: pwsh
         run: |
-          pyinstaller --noconfirm --clean --onedir --noupx --windowed --name WoWStoryVoice --collect-all kokoro_onnx --collect-all espeakng_loader --collect-all pystray Companion/app.py
+          pyinstaller --noconfirm --clean --onedir --noupx --windowed --name WoWStoryVoice --collect-all kokoro_onnx --collect-all onnxruntime --collect-all espeakng_loader --collect-all pystray Companion/app.py
       - name: Package addon
         shell: pwsh
         run: |
