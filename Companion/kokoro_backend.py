@@ -9,9 +9,9 @@ class KokoroBackend:
         import companion as engine
         self.engine = engine
         self.data_dir = Path(data_dir)
-        model, voices = engine.ensure_models()
+        engine.ensure_models()
         from kokoro_onnx import Kokoro
-        self.model = Kokoro(str(model), str(voices))
+        self.model = Kokoro(str(engine.MODEL), str(engine.VOICES))
         self.available = list(self.model.get_voices())
         if not self.available:
             raise RuntimeError("Kokoro reported no voices")
