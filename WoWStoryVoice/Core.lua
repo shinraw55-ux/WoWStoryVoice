@@ -2,33 +2,34 @@ local addonName = ...
 local WSV = CreateFrame("Frame")
 local pixels = {}
 
-local VERSION = "0.7.0"
+local VERSION = "0.8.0"
 local MAGIC = "WSV6"
 
--- WSV6 transport remains unchanged from v0.6.0 to protect the live-verified
--- RGB bridge while higher-level dialogue handling evolves.
+-- Keep the live-verified WSV6 transport unchanged. v0.8 only adds UX,
+-- configuration and a lightweight version heartbeat on top of it.
 local CELL_PX = 5
 local X_PX = 20
 local Y_PX = 20
-
 local CHUNK_DATA_MAX = 91
 local TX_HOLD_SEC = 0.16
 local TX_MIN_WINDOW_SEC = 2.6
 local TX_MIN_ROUNDS = 2
+local HEARTBEAT_SEC = 30
 
 local messageId = 0
 local txQueue = {}
 local txHead = 1
 local txElapsed = 0
 local currentPacket = nil
+local heartbeatElapsed = HEARTBEAT_SEC
+local optionsFrame = nil
+local optionChecks = {}
 
 WoWStoryVoiceDB = WoWStoryVoiceDB or {}
-if WoWStoryVoiceDB.skipBlizzardVoiced == nil then
-  WoWStoryVoiceDB.skipBlizzardVoiced = true
-end
-if WoWStoryVoiceDB.monsterDialogue == nil then
-  WoWStoryVoiceDB.monsterDialogue = true
-end
+if WoWStoryVoiceDB.skipBlizzardVoiced == nil then WoWStoryVoiceDB.skipBlizzardVoiced = true end
+if WoWStoryVoiceDB.monsterDialogue == nil then WoWStoryVoiceDB.monsterDialogue = true end
+if WoWStoryVoiceDB.questDialogue == nil then WoWStoryVoiceDB.questDialogue = true end
+if WoWStoryVoiceDB.gossipDialogue == nil then WoWStoryVoiceDB.gossipDialogue = true end
 
 local MONSTER_EVENT_KIND = {
   CHAT_MSG_MONSTER_SAY = "monster_say",
@@ -39,9 +40,7 @@ local MONSTER_EVENT_KIND = {
 
 local function checksum(s)
   local c = 0
-  for i = 1, #s do
-    c = (c + string.byte(s, i)) % 256
-  end
+  for i = 1, #s do c = (c + string.byte(s, i)) % 256 end
   return c
 end
 
@@ -60,7 +59,6 @@ local function ensurePixels(n)
     local size = pixelsToUI(CELL_PX, t)
     local x = pixelsToUI(X_PX + (i - 1) * CELL_PX, t)
     local y = pixelsToUI(Y_PX, t)
-
     t:SetSize(size, size)
     t:SetPoint("TOPLEFT", UIParent, "TOPLEFT", x, -y)
     t:SetSnapToPixelGrid(true)
@@ -71,24 +69,15 @@ end
 
 local function appendByteCells(cells, value)
   local bits = {}
-  for shift = 7, 0, -1 do
-    bits[#bits + 1] = math.floor(value / (2 ^ shift)) % 2
-  end
+  for shift = 7, 0, -1 do bits[#bits + 1] = math.floor(value / (2 ^ shift)) % 2 end
   bits[#bits + 1] = 0
-
-  for i = 1, 9, 3 do
-    cells[#cells + 1] = { bits[i], bits[i + 1], bits[i + 2] }
-  end
+  for i = 1, 9, 3 do cells[#cells + 1] = { bits[i], bits[i + 1], bits[i + 2] } end
 end
 
 local function emitBytes(bytes)
   local cells = {}
-  for i = 1, #bytes do
-    appendByteCells(cells, string.byte(bytes, i))
-  end
-
+  for i = 1, #bytes do appendByteCells(cells, string.byte(bytes, i)) end
   ensurePixels(#cells)
-
   for i = 1, #pixels do
     if i <= #cells then
       local c = cells[i]
@@ -101,12 +90,7 @@ local function emitBytes(bytes)
 end
 
 local function makeChunkPacket(msgId, chunkIndex, chunkTotal, chunkData)
-  local meta =
-    u16Bytes(msgId) ..
-    u16Bytes(chunkIndex) ..
-    u16Bytes(chunkTotal) ..
-    string.char(#chunkData)
-
+  local meta = u16Bytes(msgId) .. u16Bytes(chunkIndex) .. u16Bytes(chunkTotal) .. string.char(#chunkData)
   local body = meta .. chunkData
   return MAGIC .. body .. string.char(checksum(body))
 end
@@ -114,9 +98,7 @@ end
 local function compactTxQueue()
   if txHead <= 128 then return end
   local remaining = {}
-  for i = txHead, #txQueue do
-    remaining[#remaining + 1] = txQueue[i]
-  end
+  for i = txHead, #txQueue do remaining[#remaining + 1] = txQueue[i] end
   txQueue = remaining
   txHead = 1
 end
@@ -128,7 +110,7 @@ local function clearTxQueue()
   currentPacket = nil
 end
 
-local function enqueueMessage(kind, npcGuid, npc, text, priority)
+local function enqueueMessage(kind, npcGuid, npc, text, priority, quick)
   kind = kind or "unknown"
   npcGuid = npcGuid or ""
   npc = npc or "Unknown"
@@ -136,7 +118,6 @@ local function enqueueMessage(kind, npcGuid, npc, text, priority)
 
   local message = kind .. "\31" .. npcGuid .. "\31" .. npc .. "\31" .. text
   local chunkTotal = math.max(1, math.ceil(#message / CHUNK_DATA_MAX))
-
   if chunkTotal > 65535 then
     print("|cffff6666WoW Story Voice:|r message is too large to transmit.")
     return
@@ -144,54 +125,56 @@ local function enqueueMessage(kind, npcGuid, npc, text, priority)
 
   messageId = (messageId + 1) % 65536
   local packets = {}
-
   for chunkIndex = 1, chunkTotal do
     local startByte = (chunkIndex - 1) * CHUNK_DATA_MAX + 1
     local chunkData = string.sub(message, startByte, startByte + CHUNK_DATA_MAX - 1)
     packets[#packets + 1] = makeChunkPacket(messageId, chunkIndex, chunkTotal, chunkData)
   end
 
-  local cycleSec = #packets * TX_HOLD_SEC
-  local rounds = math.max(TX_MIN_ROUNDS, math.ceil(TX_MIN_WINDOW_SEC / math.max(cycleSec, TX_HOLD_SEC)))
-  rounds = math.min(rounds, 16)
+  local rounds
+  if quick then
+    rounds = 2
+  else
+    local cycleSec = #packets * TX_HOLD_SEC
+    rounds = math.max(TX_MIN_ROUNDS, math.ceil(TX_MIN_WINDOW_SEC / math.max(cycleSec, TX_HOLD_SEC)))
+    rounds = math.min(rounds, 16)
+  end
 
   local staged = {}
   for _ = 1, rounds do
-    for _, packet in ipairs(packets) do
-      staged[#staged + 1] = packet
-    end
+    for _, packet in ipairs(packets) do staged[#staged + 1] = packet end
   end
 
   if priority then
     local oldRemaining = {}
-    for i = txHead, #txQueue do
-      oldRemaining[#oldRemaining + 1] = txQueue[i]
-    end
+    for i = txHead, #txQueue do oldRemaining[#oldRemaining + 1] = txQueue[i] end
     txQueue = staged
-    for _, packet in ipairs(oldRemaining) do
-      txQueue[#txQueue + 1] = packet
-    end
+    for _, packet in ipairs(oldRemaining) do txQueue[#txQueue + 1] = packet end
     txHead = 1
     txElapsed = 0
     currentPacket = nil
   else
-    for _, packet in ipairs(staged) do
-      txQueue[#txQueue + 1] = packet
-    end
+    for _, packet in ipairs(staged) do txQueue[#txQueue + 1] = packet end
   end
 end
 
+local function queueHeartbeat()
+  enqueueMessage("control", "", "Narrator", "hello|" .. VERSION, false, true)
+end
+
 WSV:SetScript("OnUpdate", function(_, elapsed)
+  heartbeatElapsed = heartbeatElapsed + elapsed
+  if heartbeatElapsed >= HEARTBEAT_SEC and txHead > #txQueue then
+    heartbeatElapsed = 0
+    queueHeartbeat()
+  end
+
   if txHead > #txQueue then
     compactTxQueue()
     return
   end
-
   txElapsed = txElapsed + elapsed
-  if currentPacket and txElapsed < TX_HOLD_SEC then
-    return
-  end
-
+  if currentPacket and txElapsed < TX_HOLD_SEC then return end
   currentPacket = txQueue[txHead]
   txHead = txHead + 1
   txElapsed = 0
@@ -200,48 +183,154 @@ end)
 
 local function npcInfo()
   local unit = nil
-  if UnitName("npc") then
-    unit = "npc"
-  elseif UnitName("target") then
-    unit = "target"
-  end
-
-  if not unit then
-    return "", "Narrator"
-  end
-
+  if UnitName("npc") then unit = "npc" elseif UnitName("target") then unit = "target" end
+  if not unit then return "", "Narrator" end
   return UnitGUID(unit) or "", UnitName(unit) or "Narrator"
 end
 
 local function capture(kind, text)
   if type(text) ~= "string" or text == "" then return end
   local guid, name = npcInfo()
-  enqueueMessage(kind, guid, name, text, false)
+  enqueueMessage(kind, guid, name, text, false, false)
 end
 
 local function captureMonsterEvent(event, ...)
   if not WoWStoryVoiceDB.monsterDialogue then return end
-
   local text = select(1, ...)
   local name = select(2, ...)
   local guid = select(12, ...)
   local isSubtitle = select(15, ...)
   local hideSenderInLetterbox = select(16, ...)
-
   if type(text) ~= "string" or text == "" then return end
   if type(name) ~= "string" or name == "" then name = "Unknown" end
   if type(guid) ~= "string" then guid = "" end
-
-  -- Blizzard marks chat lines used as subtitles/cinematic text in the generic
-  -- CHAT_MSG payload. With the default setting enabled, do not synthesize those
-  -- lines so the local TTS does not speak over Blizzard's original presentation.
-  if WoWStoryVoiceDB.skipBlizzardVoiced and (isSubtitle == true or hideSenderInLetterbox == true) then
-    return
-  end
-
-  enqueueMessage(MONSTER_EVENT_KIND[event] or "monster", guid, name, text, false)
+  if WoWStoryVoiceDB.skipBlizzardVoiced and (isSubtitle == true or hideSenderInLetterbox == true) then return end
+  enqueueMessage(MONSTER_EVENT_KIND[event] or "monster", guid, name, text, false, false)
 end
 
+local function boolText(value)
+  return value and "ON" or "OFF"
+end
+
+local function printStatus()
+  print("|cff66ff66WoW Story Voice " .. VERSION .. "|r / WSV6")
+  print("  Quest dialogue: " .. boolText(WoWStoryVoiceDB.questDialogue))
+  print("  Gossip dialogue: " .. boolText(WoWStoryVoiceDB.gossipDialogue))
+  print("  Ambient NPC dialogue: " .. boolText(WoWStoryVoiceDB.monsterDialogue))
+  print("  Skip Blizzard subtitle/cinematic lines: " .. boolText(WoWStoryVoiceDB.skipBlizzardVoiced))
+end
+
+local function refreshOptionChecks()
+  if not optionsFrame then return end
+  if optionChecks.quest then optionChecks.quest:SetChecked(WoWStoryVoiceDB.questDialogue) end
+  if optionChecks.gossip then optionChecks.gossip:SetChecked(WoWStoryVoiceDB.gossipDialogue) end
+  if optionChecks.monsters then optionChecks.monsters:SetChecked(WoWStoryVoiceDB.monsterDialogue) end
+  if optionChecks.blizzard then optionChecks.blizzard:SetChecked(WoWStoryVoiceDB.skipBlizzardVoiced) end
+end
+
+local function makeCheck(parent, label, y, getter, setter)
+  local check = CreateFrame("CheckButton", nil, parent, "UICheckButtonTemplate")
+  check:SetPoint("TOPLEFT", 22, y)
+  check:SetSize(26, 26)
+  local text = parent:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+  text:SetPoint("LEFT", check, "RIGHT", 6, 0)
+  text:SetText(label)
+  check:SetScript("OnClick", function(self)
+    setter(self:GetChecked() and true or false)
+  end)
+  check:SetChecked(getter())
+  return check
+end
+
+local function makeButton(parent, label, x, y, width, callback)
+  local button = CreateFrame("Button", nil, parent, "UIPanelButtonTemplate")
+  button:SetSize(width or 105, 24)
+  button:SetPoint("BOTTOMLEFT", x, y)
+  button:SetText(label)
+  button:SetScript("OnClick", callback)
+  return button
+end
+
+local function createOptionsFrame()
+  if optionsFrame then return optionsFrame end
+
+  local frame = CreateFrame("Frame", "WoWStoryVoiceOptionsFrame", UIParent)
+  frame:SetSize(450, 330)
+  frame:SetPoint("CENTER")
+  frame:SetFrameStrata("DIALOG")
+  frame:SetMovable(true)
+  frame:EnableMouse(true)
+  frame:RegisterForDrag("LeftButton")
+  frame:SetScript("OnDragStart", frame.StartMoving)
+  frame:SetScript("OnDragStop", frame.StopMovingOrSizing)
+  frame:SetClampedToScreen(true)
+
+  local bg = frame:CreateTexture(nil, "BACKGROUND")
+  bg:SetAllPoints(frame)
+  bg:SetColorTexture(0.035, 0.035, 0.05, 0.96)
+
+  local border = frame:CreateTexture(nil, "BORDER")
+  border:SetPoint("TOPLEFT", -1, 1)
+  border:SetPoint("BOTTOMRIGHT", 1, -1)
+  border:SetColorTexture(0.25, 0.25, 0.30, 1)
+  local inner = frame:CreateTexture(nil, "ARTWORK")
+  inner:SetPoint("TOPLEFT", 1, -1)
+  inner:SetPoint("BOTTOMRIGHT", -1, 1)
+  inner:SetColorTexture(0.035, 0.035, 0.05, 1)
+
+  local title = frame:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
+  title:SetPoint("TOPLEFT", 20, -18)
+  title:SetText("WoW Story Voice")
+
+  local version = frame:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+  version:SetPoint("TOPLEFT", title, "BOTTOMLEFT", 0, -4)
+  version:SetText("Addon v" .. VERSION .. " · WSV6")
+
+  local close = CreateFrame("Button", nil, frame, "UIPanelCloseButton")
+  close:SetPoint("TOPRIGHT", -4, -4)
+
+  optionChecks.quest = makeCheck(frame, "Read quest dialogue", -72,
+    function() return WoWStoryVoiceDB.questDialogue end,
+    function(v) WoWStoryVoiceDB.questDialogue = v end)
+  optionChecks.gossip = makeCheck(frame, "Read gossip dialogue", -108,
+    function() return WoWStoryVoiceDB.gossipDialogue end,
+    function(v) WoWStoryVoiceDB.gossipDialogue = v end)
+  optionChecks.monsters = makeCheck(frame, "Read ambient NPC speech", -144,
+    function() return WoWStoryVoiceDB.monsterDialogue end,
+    function(v) WoWStoryVoiceDB.monsterDialogue = v end)
+  optionChecks.blizzard = makeCheck(frame, "Skip Blizzard subtitle/cinematic lines", -180,
+    function() return WoWStoryVoiceDB.skipBlizzardVoiced end,
+    function(v) WoWStoryVoiceDB.skipBlizzardVoiced = v end)
+
+  local hint = frame:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+  hint:SetPoint("TOPLEFT", 24, -222)
+  hint:SetWidth(400)
+  hint:SetJustifyH("LEFT")
+  hint:SetText("Companion volume, startup, update checks and addon installation are controlled in the Windows app.")
+
+  makeButton(frame, "Test", 22, 18, 90, function()
+    enqueueMessage("test", "", "Narrator", "WoW Story Voice is connected and ready.", true, false)
+  end)
+  makeButton(frame, "Stop speech", 120, 18, 105, function()
+    clearTxQueue()
+    enqueueMessage("control", "", "Narrator", "stop", true, true)
+  end)
+  makeButton(frame, "Status", 233, 18, 90, printStatus)
+  makeButton(frame, "Close", 331, 18, 90, function() frame:Hide() end)
+
+  frame:SetScript("OnShow", refreshOptionChecks)
+  frame:Hide()
+  optionsFrame = frame
+  return frame
+end
+
+local function toggleOptions()
+  local frame = createOptionsFrame()
+  refreshOptionChecks()
+  if frame:IsShown() then frame:Hide() else frame:Show() end
+end
+
+WSV:RegisterEvent("PLAYER_LOGIN")
 WSV:RegisterEvent("QUEST_DETAIL")
 WSV:RegisterEvent("QUEST_PROGRESS")
 WSV:RegisterEvent("QUEST_COMPLETE")
@@ -253,25 +342,25 @@ WSV:RegisterEvent("CHAT_MSG_MONSTER_WHISPER")
 WSV:RegisterEvent("CHAT_MSG_MONSTER_PARTY")
 
 WSV:SetScript("OnEvent", function(_, event, ...)
-  if event == "QUEST_DETAIL" then
-    capture("quest", GetQuestText())
+  if event == "PLAYER_LOGIN" then
+    heartbeatElapsed = HEARTBEAT_SEC
+  elseif event == "QUEST_DETAIL" then
+    if WoWStoryVoiceDB.questDialogue then capture("quest", GetQuestText()) end
   elseif event == "QUEST_PROGRESS" then
-    capture("progress", GetProgressText())
+    if WoWStoryVoiceDB.questDialogue then capture("progress", GetProgressText()) end
   elseif event == "QUEST_COMPLETE" then
-    capture("reward", GetRewardText())
+    if WoWStoryVoiceDB.questDialogue then capture("reward", GetRewardText()) end
   elseif event == "QUEST_GREETING" then
-    capture("greeting", GetGreetingText())
+    if WoWStoryVoiceDB.questDialogue then capture("greeting", GetGreetingText()) end
   elseif event == "GOSSIP_SHOW" then
-    local text = C_GossipInfo and C_GossipInfo.GetText and C_GossipInfo.GetText()
-    capture("gossip", text)
+    if WoWStoryVoiceDB.gossipDialogue then
+      local text = C_GossipInfo and C_GossipInfo.GetText and C_GossipInfo.GetText()
+      capture("gossip", text)
+    end
   elseif MONSTER_EVENT_KIND[event] then
     captureMonsterEvent(event, ...)
   end
 end)
-
-local function boolText(value)
-  return value and "ON" or "OFF"
-end
 
 SLASH_WOWSTORYVOICE1 = "/wsv"
 SlashCmdList.WOWSTORYVOICE = function(msg)
@@ -279,18 +368,21 @@ SlashCmdList.WOWSTORYVOICE = function(msg)
   local command, arg = string.match(string.lower(raw), "^(%S*)%s*(%S*)")
 
   if command == "test" then
-    enqueueMessage(
-      "test",
-      "",
-      "Narrator",
-      "WoW Story Voice is connected and ready. Full dialogue, queued speech, persistent NPC voices and improved pacing are active.",
-      true
-    )
+    enqueueMessage("test", "", "Narrator", "WoW Story Voice is connected and ready. Companion and addon version checking are active.", true, false)
+    queueHeartbeat()
     print("|cff66ff66WoW Story Voice:|r test queued (v" .. VERSION .. ", WSV6 transport).")
   elseif command == "stop" then
     clearTxQueue()
-    enqueueMessage("control", "", "Narrator", "stop", true)
+    enqueueMessage("control", "", "Narrator", "stop", true, true)
     print("|cff66ff66WoW Story Voice:|r stop command sent.")
+  elseif command == "config" or command == "options" then
+    toggleOptions()
+  elseif command == "quests" and (arg == "on" or arg == "off") then
+    WoWStoryVoiceDB.questDialogue = (arg == "on")
+    print("|cff66ff66WoW Story Voice:|r quest dialogue: " .. boolText(WoWStoryVoiceDB.questDialogue))
+  elseif command == "gossip" and (arg == "on" or arg == "off") then
+    WoWStoryVoiceDB.gossipDialogue = (arg == "on")
+    print("|cff66ff66WoW Story Voice:|r gossip dialogue: " .. boolText(WoWStoryVoiceDB.gossipDialogue))
   elseif command == "blizzard" and (arg == "on" or arg == "off") then
     WoWStoryVoiceDB.skipBlizzardVoiced = (arg == "on")
     print("|cff66ff66WoW Story Voice:|r skip Blizzard subtitle/cinematic lines: " .. boolText(WoWStoryVoiceDB.skipBlizzardVoiced))
@@ -298,18 +390,15 @@ SlashCmdList.WOWSTORYVOICE = function(msg)
     WoWStoryVoiceDB.monsterDialogue = (arg == "on")
     print("|cff66ff66WoW Story Voice:|r ambient NPC dialogue: " .. boolText(WoWStoryVoiceDB.monsterDialogue))
   elseif command == "status" then
-    print("|cff66ff66WoW Story Voice " .. VERSION .. "|r / WSV6")
-    print("  Skip Blizzard subtitle/cinematic lines: " .. boolText(WoWStoryVoiceDB.skipBlizzardVoiced))
-    print("  Ambient NPC dialogue: " .. boolText(WoWStoryVoiceDB.monsterDialogue))
+    printStatus()
   elseif command == "hide" then
-    for _, p in ipairs(pixels) do
-      p:Hide()
-    end
+    for _, p in ipairs(pixels) do p:Hide() end
   elseif command == "show" then
-    enqueueMessage("test", "", "Narrator", "Bridge visible.", true)
+    enqueueMessage("test", "", "Narrator", "Bridge visible.", true, false)
   else
     print("|cff66ff66WoW Story Voice " .. VERSION .. "|r commands:")
-    print("  /wsv test, /wsv stop, /wsv status, /wsv show, /wsv hide")
+    print("  /wsv config, /wsv test, /wsv stop, /wsv status, /wsv show, /wsv hide")
+    print("  /wsv quests on|off, /wsv gossip on|off")
     print("  /wsv blizzard on|off, /wsv monsters on|off")
   end
 end
