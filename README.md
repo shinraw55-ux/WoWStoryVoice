@@ -75,6 +75,13 @@ Startup housekeeping also rotates the main log at 5 MiB, keeps a bounded set of 
 
 CI now includes a transport soak test that repeatedly reassembles hundreds of long UTF-8 messages while receiving chunks in reverse order and with duplicate packets. This is not a substitute for several hours of real WoW questing, but it exercises the reassembler and duplicate handling far more heavily than the normal unit cases.
 
+## Speech engine packaging
+The Windows v0.8 development build currently bundles **Chatterbox Turbo** as the supported speech engine. The transport is deliberately independent of the TTS backend, and adapters for Kokoro ONNX and CosyVoice remain in source for future isolated runtimes.
+
+They are **not exposed as selectable engines in the packaged GUI**. This is intentional: current Chatterbox 0.1.7 requires NumPy 1.x on Python 3.11 while current kokoro-onnx 0.6.1 requires NumPy 2.x, so installing both into the same frozen Python environment is an upstream dependency conflict. CosyVoice likewise expects its own upstream runtime/model layout. WoW Story Voice falls back to the bundled Chatterbox engine if an old settings file names an unavailable external engine rather than failing at startup.
+
+Chatterbox voice cloning uses reference WAV files under the local data directory when valid references are present. If no valid reference is available, Chatterbox uses its built-in conditionals and logs that fallback instead of silently claiming a distinct cloned NPC voice.
+
 ## Install
 The Windows artifact contains both the portable folder and `WoWStoryVoice-Setup-v0.8.0.exe`.
 
