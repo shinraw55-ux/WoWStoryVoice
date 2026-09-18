@@ -5,3 +5,4 @@
 ## Version: 0.8.0
 ## SavedVariables: WoWStoryVoiceDB
 Core.lua
+SpeakerIndicator.lua
