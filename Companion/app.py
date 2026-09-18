@@ -14,11 +14,14 @@ except Exception:
 
 import runtime
 import voice_profiles
+import beta_hardening
 
-# Runtime deliberately keeps the proven WSV6 transport/queue code untouched.
-# Swap only the voice registry so NPC profile metadata can select sex/race-aware
-# Kokoro voice pools.
+# Keep the proven WSV6 transport untouched while layering profile-aware voices
+# and beta hardening around the desktop runtime.
 runtime.engine.VoiceRegistry = voice_profiles.VoiceRegistry
+runtime.synthesize_to_wav = beta_hardening.make_atomic_synthesizer(runtime.synthesize_to_wav)
+runtime.engine.play_wav = beta_hardening.make_validating_player(runtime.engine.play_wav)
+runtime.SpeechController = beta_hardening.make_bounded_controller(runtime.SpeechController)
 
 VERSION = runtime.VERSION
 
@@ -218,6 +221,8 @@ class CompanionGUI:
 
 
 def main():
+    beta_hardening.startup_housekeeping(runtime.DATA, runtime.CACHE, runtime.LOG_FILE)
+
     root = tk.Tk()
     root.withdraw()
     splash = tk.Toplevel(root)
