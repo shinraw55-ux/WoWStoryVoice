@@ -15,7 +15,7 @@ end
 
 local function ensurePixels(n)
   for i = #pixels + 1, n do
-    local t = UIParent:CreateTexture(nil, "TOOLTIP")
+    local t = UIParent:CreateTexture(nil, "OVERLAY")
     t:SetSize(PIXEL_SIZE, PIXEL_SIZE)
     t:SetPoint("TOPLEFT", UIParent, "TOPLEFT", X0 + (i-1)*PIXEL_SIZE, Y0)
     t:SetColorTexture(0,0,0,1)
