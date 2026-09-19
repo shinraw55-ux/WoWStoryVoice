@@ -297,7 +297,10 @@ def main():
     splash.geometry("500x145")
     splash.resizable(False, False)
     ttk.Label(splash, text=f"WoW Story Voice v{VERSION}", font=("Segoe UI", 14, "bold")).pack(pady=(18, 6))
-    ttk.Label(splash, text=f"Loading {runtime.TTS_ENGINE_NAME}… First launch may download a model.").pack()
+    splash_status = tk.StringVar(value=f"Loading {runtime.TTS_ENGINE_NAME}… First launch may download a model.")
+    splash_timer = tk.StringVar(value="Elapsed: 00:00 · Remaining: estimating…")
+    ttk.Label(splash, textvariable=splash_status).pack()
+    ttk.Label(splash, textvariable=splash_timer).pack(pady=(4, 0))
     ttk.Label(splash, text="The window stays responsive while the local AI voice starts.").pack(pady=(4, 0))
     splash.update()
 
@@ -310,8 +313,18 @@ def main():
             load_result["error"] = e
 
     loader = threading.Thread(target=load_voice_engine, name="WSV-TTS-Loader", daemon=True)
+    load_started = time.monotonic()
     loader.start()
     while loader.is_alive():
+        elapsed = max(0, int(time.monotonic() - load_started))
+        mins, secs = divmod(elapsed, 60)
+        # Chatterbox/Hugging Face does not expose a trustworthy total byte count
+        # to this process during from_pretrained(), so do not invent an ETA.
+        # Show an exact elapsed timer and explicitly mark the remaining time as
+        # unknown until the engine reports progress we can measure.
+        splash_timer.set(f"Elapsed: {mins:02d}:{secs:02d} · Remaining: estimating…")
+        if elapsed >= 120:
+            splash_status.set(f"Still loading {runtime.TTS_ENGINE_NAME}… First model setup can take several minutes.")
         splash.update_idletasks()
         splash.update()
         loader.join(0.05)
