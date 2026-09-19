@@ -12,8 +12,8 @@ local CELL_PX = 5
 local X_PX = 20
 local Y_PX = 20
 local CHUNK_DATA_MAX = 91
-local TX_HOLD_SEC = 0.12
-local TX_MIN_WINDOW_SEC = 2.6
+local TX_HOLD_SEC = 0.045
+local TX_MIN_WINDOW_SEC = 1.2
 local TX_MIN_ROUNDS = 2
 local HEARTBEAT_SEC = 30
 
