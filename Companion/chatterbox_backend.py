@@ -86,9 +86,15 @@ class ChatterboxBackend:
         print(f"Loading {ENGINE_NAME} on {self.device.upper()}...")
         self.model = ChatterboxTurboTTS.from_pretrained(device=self.device)
         self.sample_rate = int(self.model.sr)
-        self._builtin_conds = self.model.conds
+
+        # Turbo may load without precomputed voice conditionals. Older builds
+        # assumed model.conds was always populated and aborted with a confusing
+        # NoneType/conditional error after the model download completed.
+        # Keep None as a valid built-in state; generate() can use the model's
+        # default path without forcing a cloned reference voice.
+        self._builtin_conds = getattr(self.model, "conds", None)
         if self._builtin_conds is None:
-            raise RuntimeError("Chatterbox Turbo did not provide built-in voice conditionals")
+            print("Chatterbox Turbo loaded without built-in voice conditionals; using model defaults.")
 
     def profile_voice_ids(self):
         return profile_voice_ids()
@@ -115,6 +121,8 @@ class ChatterboxBackend:
         voice = str(voice or "").strip()
         ref = self.reference_path(voice)
         if not voice or not self._valid_reference(ref):
+            # Preserve the model's default unconditional state when Turbo does
+            # not ship precomputed conditionals.
             self.model.conds = self._builtin_conds
             if voice and voice not in self._missing_refs_logged:
                 self._missing_refs_logged.add(voice)
