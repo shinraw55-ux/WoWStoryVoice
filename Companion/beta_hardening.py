@@ -14,27 +14,60 @@ MAX_CACHE_FILES = 10000
 TEMP_MAX_AGE_SEC = 6 * 60 * 60
 
 
-def is_valid_wav(path):
+def wav_info(path):
     path = Path(path)
     if not path.exists() or path.stat().st_size < 64:
-        return False
+        return None
     try:
         info = sf.info(str(path))
-        return info.frames > 0 and info.samplerate > 0 and info.channels > 0
+        if info.frames > 0 and info.samplerate > 0 and info.channels > 0:
+            return info
     except Exception:
-        return False
+        return None
+    return None
+
+
+def is_valid_wav(path):
+    return wav_info(path) is not None
 
 
 def make_atomic_synthesizer(original):
     """Wrap TTS writes so an interrupted generation never leaves a cache hit that is half a WAV."""
     def atomic(kokoro, voice, text, wav, speed=1.0, volume=1.0):
+        total_started = time.perf_counter()
         wav = Path(wav)
         tmp = wav.with_name(wav.name + f".{os.getpid()}.{time.time_ns()}.tmp.wav")
         try:
+            synth_started = time.perf_counter()
             result = original(kokoro, voice, text, tmp, speed, volume)
-            if not is_valid_wav(tmp):
+            wrapped_synth_ms = (time.perf_counter() - synth_started) * 1000.0
+
+            validate_started = time.perf_counter()
+            info = wav_info(tmp)
+            validate_ms = (time.perf_counter() - validate_started) * 1000.0
+            if info is None:
                 raise RuntimeError("Generated WAV failed validation")
+
+            rename_started = time.perf_counter()
             tmp.replace(wav)
+            rename_ms = (time.perf_counter() - rename_started) * 1000.0
+            total_ms = (time.perf_counter() - total_started) * 1000.0
+
+            try:
+                kokoro.last_atomic_timings = {
+                    "wrapped_synth_ms": wrapped_synth_ms,
+                    "validation_ms": validate_ms,
+                    "rename_ms": rename_ms,
+                    "atomic_total_ms": total_ms,
+                    "audio_duration_ms": (info.frames / float(info.samplerate)) * 1000.0,
+                }
+            except Exception:
+                pass
+            print(
+                "LATENCY WAV_ATOMIC "
+                f"wrapped_synth={wrapped_synth_ms:.1f}ms validate={validate_ms:.1f}ms "
+                f"rename={rename_ms:.1f}ms total={total_ms:.1f}ms"
+            )
             return result
         finally:
             try:
@@ -46,16 +79,41 @@ def make_atomic_synthesizer(original):
 
 
 def make_validating_player(original):
-    """Reject and remove corrupt cached WAVs so the next request regenerates them."""
+    """Reject corrupt WAVs and expose file/audio dispatch cost separately."""
     def play(path, blocking=False):
         path = Path(path)
-        if not is_valid_wav(path):
+        validate_started = time.perf_counter()
+        info = wav_info(path)
+        validation_ms = (time.perf_counter() - validate_started) * 1000.0
+        if info is None:
             try:
                 path.unlink(missing_ok=True)
             except Exception:
                 pass
             raise RuntimeError(f"Invalid/corrupt cached WAV removed: {path.name}")
-        return original(path, blocking=blocking)
+
+        audio_duration_ms = (info.frames / float(info.samplerate)) * 1000.0
+        call_started = time.perf_counter()
+        result = original(path, blocking=blocking)
+        call_ms = (time.perf_counter() - call_started) * 1000.0
+        excess_ms = max(0.0, call_ms - audio_duration_ms) if blocking else call_ms
+
+        play.last_timings = {
+            "validation_ms": validation_ms,
+            "play_call_ms": call_ms,
+            "audio_duration_ms": audio_duration_ms,
+            "excess_over_audio_ms": excess_ms,
+            "blocking": bool(blocking),
+        }
+        print(
+            "LATENCY PLAYBACK_IO "
+            f"validate={validation_ms:.1f}ms call={call_ms:.1f}ms "
+            f"audio_duration={audio_duration_ms:.1f}ms excess={excess_ms:.1f}ms "
+            f"blocking={int(bool(blocking))}"
+        )
+        return result
+
+    play.last_timings = {}
     return play
 
 
