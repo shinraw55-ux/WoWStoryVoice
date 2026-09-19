@@ -19,6 +19,7 @@ import beta_hardening
 import multi_engine
 import tts_registry
 import speaker_performance
+import single_instance
 
 # Keep WSV6 transport untouched; TTS is selected independently.
 multi_engine.configure_runtime(runtime)
@@ -267,10 +268,10 @@ class CompanionGUI:
         webbrowser.open(self.state.snapshot().get("update_url") or runtime.WORKFLOW_URL)
 
     def on_close(self):
-        if self.tray.icon is not None:
-            self.root.withdraw()
-        else:
-            self.shutdown()
+        # Closing the main window means exit. Previous builds silently hid to
+        # the tray, which left the TTS model and 12 ms capture loop running and
+        # made it easy to launch multiple competing companion processes.
+        self.shutdown()
 
     def show(self):
         self.root.deiconify()
@@ -288,10 +289,21 @@ class CompanionGUI:
         except Exception as e:
             print(f"Speech shutdown warning: {type(e).__name__}: {e}")
         self.tray.stop()
+        single_instance.release()
         self.root.destroy()
 
 
 def main():
+    if not single_instance.acquire():
+        duplicate_root = tk.Tk()
+        duplicate_root.withdraw()
+        messagebox.showinfo(
+            "WoW Story Voice",
+            "WoW Story Voice is already running. Close the existing companion before starting another instance.",
+        )
+        duplicate_root.destroy()
+        return
+
     beta_hardening.startup_housekeeping(runtime.DATA, runtime.CACHE, runtime.LOG_FILE)
 
     root = tk.Tk()
