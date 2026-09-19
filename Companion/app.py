@@ -280,9 +280,13 @@ class CompanionGUI:
         self.stop_event.set()
         self.listening_event.set()
         try:
-            self.speech.stop_and_clear()
-        except Exception:
-            pass
+            shutdown = getattr(self.speech, "shutdown", None)
+            if callable(shutdown):
+                shutdown()
+            else:
+                self.speech.stop_and_clear()
+        except Exception as e:
+            print(f"Speech shutdown warning: {type(e).__name__}: {e}")
         self.tray.stop()
         self.root.destroy()
 
