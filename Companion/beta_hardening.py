@@ -118,9 +118,6 @@ def clean_stale_temps(cache_dir, max_age_sec=TEMP_MAX_AGE_SEC, now=None):
                 removed += 1
         except Exception:
             pass
-    # Atomic synth temp names include a unique token before .tmp.wav.
-    for path in cache_dir.glob("*.tmp.wav"):
-        pass
     return removed
 
 
