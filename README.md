@@ -75,6 +75,9 @@ Startup housekeeping also rotates the main log at 5 MiB, keeps a bounded set of 
 
 CI now includes a transport soak test that repeatedly reassembles hundreds of long UTF-8 messages while receiving chunks in reverse order and with duplicate packets. This is not a substitute for several hours of real WoW questing, but it exercises the reassembler and duplicate handling far more heavily than the normal unit cases.
 
+## Downloads
+The Windows CI publishes two separate artifacts. **WoWStoryVoice-Windows-Installer** contains the installer and checksum only; the unpacked PyInstaller runtime is deliberately not uploaded a second time because it is already embedded in the installer. **WoWStoryVoice-Addon** is the tiny standalone addon package for addon-only updates.
+
 ## Speech engine packaging
 The Windows v0.8 development build currently bundles **Chatterbox Turbo** as the supported speech engine. The transport is deliberately independent of the TTS backend, and adapters for Kokoro ONNX and CosyVoice remain in source for future isolated runtimes.
 
