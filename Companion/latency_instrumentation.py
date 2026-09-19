@@ -25,7 +25,14 @@ def install(runtime_module, voice_profiles_module):
     if getattr(runtime_module, "_latency_instrumentation_installed", False):
         return
 
-    base_registry = runtime_module.engine.VoiceRegistry
+    # Small isolated unit-test runtimes intentionally do not carry the full
+    # companion transport module. Instrumentation must never change whether
+    # those functional tests can exercise speaker/performance logic.
+    engine = getattr(runtime_module, "engine", None)
+    if engine is None:
+        return
+
+    base_registry = engine.VoiceRegistry
 
     class TimedVoiceRegistry(base_registry):
         def voice_for(self, npc_guid, npc_name):
@@ -43,9 +50,9 @@ def install(runtime_module, voice_profiles_module):
                 _local.profile_ms = (time.perf_counter() - started) * 1000.0
 
     TimedVoiceRegistry.__name__ = "TimedVoiceRegistry"
-    runtime_module.engine.VoiceRegistry = TimedVoiceRegistry
+    engine.VoiceRegistry = TimedVoiceRegistry
 
-    original_split = runtime_module.engine.split_dialogue
+    original_split = engine.split_dialogue
 
     def timed_split(*args, **kwargs):
         started = time.perf_counter()
@@ -56,7 +63,7 @@ def install(runtime_module, voice_profiles_module):
                 time.perf_counter() - started
             ) * 1000.0
 
-    runtime_module.engine.split_dialogue = timed_split
+    engine.split_dialogue = timed_split
 
     original_infer = runtime_module.emotion_profiles.infer_emotion
 
@@ -84,7 +91,7 @@ def install(runtime_module, voice_profiles_module):
 
     runtime_module.emotion_profiles.delivery_for_segment = timed_delivery
 
-    original_play = runtime_module.engine.play_wav
+    original_play = engine.play_wav
 
     def timed_play(path, blocking=False):
         first = bool(getattr(_local, "first_play_pending", False))
@@ -121,9 +128,9 @@ def install(runtime_module, voice_profiles_module):
             )
         return result
 
-    runtime_module.engine.play_wav = timed_play
+    engine.play_wav = timed_play
 
-    original_find_bridge = runtime_module.engine.find_bridge
+    original_find_bridge = engine.find_bridge
 
     def timed_find_bridge(*args, **kwargs):
         started = time.perf_counter()
@@ -133,5 +140,5 @@ def install(runtime_module, voice_profiles_module):
         print(f"LATENCY BRIDGE_SCAN found={int(found)} scan={elapsed_ms:.1f}ms")
         return result
 
-    runtime_module.engine.find_bridge = timed_find_bridge
+    engine.find_bridge = timed_find_bridge
     runtime_module._latency_instrumentation_installed = True
