@@ -70,6 +70,12 @@ class ChatterboxBackend:
         # Import the heavy stack lazily. This keeps protocol/unit tests fast and
         # lets packaging tests import the module without downloading a model.
         import torch
+        import perth
+        if not callable(getattr(perth, "PerthImplicitWatermarker", None)):
+            raise RuntimeError(
+                "Chatterbox dependency Perth is incomplete: PerthImplicitWatermarker "
+                "could not be imported. The packaged runtime must include pkg_resources."
+            )
         from chatterbox.tts_turbo import ChatterboxTurboTTS
 
         self.torch = torch
