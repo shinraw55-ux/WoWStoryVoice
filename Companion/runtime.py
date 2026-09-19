@@ -310,7 +310,8 @@ class SpeechController:
                         sr, frames, peak = synthesize_to_wav(
                             self.kokoro, voice, segment, wav, speed, volume
                         )
-                        synth_ms = (time.perf_counter() - synth_started) * 1000.0
+                        synth_finished = time.perf_counter()
+                        synth_ms = (synth_finished - synth_started) * 1000.0
                         cue_text = ",".join(delivery.cues[:4]) or "none"
                         print(
                             f"TTS generated: [{job.kind}] {job.npc_name}, segment={index}/{len(segments)}, "
@@ -335,7 +336,14 @@ class SpeechController:
                             f"segments={len(segments)} first_chars={len(segment)}"
                         )
                         first_audio = False
+                    playback_call_at = time.perf_counter()
                     engine.play_wav(wav, blocking=True)
+                    playback_done_at = time.perf_counter()
+                    if index == 1:
+                        print(
+                            f"LATENCY PLAYBACK first_segment_call_to_return="
+                            f"{(playback_done_at - playback_call_at) * 1000.0:.0f}ms"
+                        )
                     if pause > 0 and self._is_current(job.epoch):
                         time.sleep(pause)
             except Exception as e:
