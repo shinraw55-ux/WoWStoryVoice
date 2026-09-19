@@ -52,6 +52,30 @@ class DialogueLatencyTests(unittest.TestCase):
         self.assertGreater(len(chunks), 1)
         self.assertTrue(all(len(chunk) <= runtime.FAST_TTS_SEGMENT_CHARS for chunk in chunks))
 
+    def test_chatterbox_first_audio_chunk_is_aggressive(self):
+        import multi_engine
+
+        class Settings(dict):
+            pass
+        class State:
+            def set(self, **kwargs):
+                pass
+        class Runtime:
+            _multi_engine_configured = False
+            DATA = Path(".")
+            CACHE = Path(".")
+            SETTINGS = Settings({"tts_engine": "chatterbox"})
+            STATE = State()
+            FAST_TTS_SEGMENT_CHARS = 120
+            class emotion_profiles:
+                pass
+            @staticmethod
+            def save_settings(_settings):
+                pass
+
+        multi_engine.configure_runtime(Runtime)
+        self.assertLessEqual(Runtime.FAST_TTS_SEGMENT_CHARS, 48)
+
     def test_chatterbox_turbo_is_requested(self):
         self.assertIn("chatterbox-tts==0.1.7", REQS)
         self.assertNotIn("kokoro-onnx[gpu]", REQS)
