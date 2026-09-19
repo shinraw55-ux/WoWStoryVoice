@@ -31,6 +31,7 @@ WORKFLOW_URL = "https://github.com/shinraw55-ux/WoWStoryVoice/actions/workflows/
 BRIDGE_STALE_SEC = 40.0
 FAST_TTS_SEGMENT_CHARS = 48
 CAPTURE_POLL_SEC = 0.012
+LATENCY_TRACE = {}
 
 DATA = engine.DATA
 CACHE = engine.CACHE
@@ -359,6 +360,12 @@ def handle_control(text, speech, state):
         print(f"Unknown control message: {normalized}")
 
 
+def _trace_message(msg_id, **values):
+    trace = LATENCY_TRACE.setdefault(msg_id, {})
+    trace.update(values)
+    return trace
+
+
 def capture_loop(speech, state, stop_event, listening_event):
     reassembler = engine.Reassembler()
     bridge_pos = None
@@ -415,8 +422,21 @@ def capture_loop(speech, state, stop_event, listening_event):
                     signature = decoded[:3] + (hashlib.sha1(decoded[3]).digest()[:4],)
                     if signature != last_chunk_signature:
                         last_chunk_signature = signature
+                        msg_id, chunk_index, chunk_total, _chunk_data = decoded
+                        trace = _trace_message(msg_id)
+                        if "first_chunk_at" not in trace:
+                            trace["first_chunk_at"] = time.perf_counter()
+                            trace["chunk_total"] = chunk_total
+                        trace["last_chunk_at"] = time.perf_counter()
                         message = reassembler.accept(decoded)
                         if message:
+                            assembled_at = time.perf_counter()
+                            trace = _trace_message(msg_id, assembled_at=assembled_at)
+                            bridge_ms = (assembled_at - trace["first_chunk_at"]) * 1000.0
+                            print(
+                                f"LATENCY BRIDGE msg={msg_id} chunks={trace.get('chunk_total', chunk_total)} "
+                                f"first_to_assembled={bridge_ms:.0f}ms"
+                            )
                             kind, npc_guid, npc_name, text = message
                             if kind == "control":
                                 handle_control(text, speech, state)
