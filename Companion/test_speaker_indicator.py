@@ -22,8 +22,11 @@ class SpeakerIndicatorTests(unittest.TestCase):
         self.assertIn("C_NamePlate.GetNamePlateForUnit", source)
         self.assertIn("UnitGUID(unit)", source)
 
-    def test_tracks_same_dialogue_sources_as_voice_capture(self):
+    def test_indicator_is_driven_by_core_acceptance_path(self):
+        core = CORE.read_text(encoding="utf-8")
         source = INDICATOR.read_text(encoding="utf-8")
+        self.assertIn("WoWStoryVoice_ActivateSpeaker", core)
+        self.assertIn("function WoWStoryVoice_ActivateSpeaker", source)
         for event in (
             "QUEST_DETAIL",
             "QUEST_PROGRESS",
@@ -31,18 +34,13 @@ class SpeakerIndicatorTests(unittest.TestCase):
             "QUEST_GREETING",
             "GOSSIP_SHOW",
             "CHAT_MSG_MONSTER_SAY",
-            "CHAT_MSG_MONSTER_YELL",
-            "CHAT_MSG_MONSTER_WHISPER",
-            "CHAT_MSG_MONSTER_PARTY",
         ):
-            self.assertIn(f'RegisterEvent("{event}")', source)
+            self.assertNotIn(f'RegisterEvent("{event}")', source)
 
-    def test_honors_existing_dialogue_toggles_and_blizzard_skip(self):
+    def test_nameplate_removal_uses_reverse_guid_map(self):
         source = INDICATOR.read_text(encoding="utf-8")
-        self.assertIn("WoWStoryVoiceDB.questDialogue", source)
-        self.assertIn("WoWStoryVoiceDB.gossipDialogue", source)
-        self.assertIn("WoWStoryVoiceDB.monsterDialogue", source)
-        self.assertIn("WoWStoryVoiceDB.skipBlizzardVoiced", source)
+        self.assertIn("nameplateGuidByUnit[unit] = guid", source)
+        self.assertIn("nameplateGuidByUnit[unit] or UnitGUID(unit)", source)
 
     def test_has_fallback_when_nameplate_is_not_available(self):
         source = INDICATOR.read_text(encoding="utf-8")
