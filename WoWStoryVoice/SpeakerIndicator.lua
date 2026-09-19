@@ -7,6 +7,7 @@ local activeName = ""
 local activeUntil = 0
 local activeUnit = nil
 local nameplateUnits = {}
+local nameplateGuidByUnit = {}
 local pulseElapsed = 0
 
 WoWStoryVoiceDB = WoWStoryVoiceDB or {}
@@ -171,28 +172,12 @@ local function activateSpeaker(guid, name, text)
   attachToSpeaker()
 end
 
-local function captureCurrentNpc(text)
-  local unit = nil
-  if UnitGUID("npc") then
-    unit = "npc"
-  elseif UnitGUID("target") then
-    unit = "target"
-  end
-  if not unit then return end
-  activateSpeaker(UnitGUID(unit) or "", UnitName(unit) or "Unknown", text)
+function WoWStoryVoice_ActivateSpeaker(guid, name, text, kind)
+  activateSpeaker(guid, name, text)
 end
 
 Indicator:RegisterEvent("NAME_PLATE_UNIT_ADDED")
 Indicator:RegisterEvent("NAME_PLATE_UNIT_REMOVED")
-Indicator:RegisterEvent("QUEST_DETAIL")
-Indicator:RegisterEvent("QUEST_PROGRESS")
-Indicator:RegisterEvent("QUEST_COMPLETE")
-Indicator:RegisterEvent("QUEST_GREETING")
-Indicator:RegisterEvent("GOSSIP_SHOW")
-Indicator:RegisterEvent("CHAT_MSG_MONSTER_SAY")
-Indicator:RegisterEvent("CHAT_MSG_MONSTER_YELL")
-Indicator:RegisterEvent("CHAT_MSG_MONSTER_WHISPER")
-Indicator:RegisterEvent("CHAT_MSG_MONSTER_PARTY")
 
 Indicator:SetScript("OnEvent", function(_, event, ...)
   if event == "NAME_PLATE_UNIT_ADDED" then
@@ -200,43 +185,15 @@ Indicator:SetScript("OnEvent", function(_, event, ...)
     local guid = UnitGUID(unit)
     if guid then
       nameplateUnits[guid] = unit
+      nameplateGuidByUnit[unit] = guid
       if guid == activeGuid and activeUntil > now() then attachToSpeaker() end
     end
-    return
   elseif event == "NAME_PLATE_UNIT_REMOVED" then
     local unit = select(1, ...)
-    local guid = UnitGUID(unit)
+    local guid = nameplateGuidByUnit[unit] or UnitGUID(unit)
+    nameplateGuidByUnit[unit] = nil
     if guid and nameplateUnits[guid] == unit then nameplateUnits[guid] = nil end
     if unit == activeUnit then showFallback() end
-    return
-  end
-
-  if not enabled() then return end
-
-  if event == "QUEST_DETAIL" then
-    if WoWStoryVoiceDB.questDialogue ~= false then captureCurrentNpc(GetQuestText()) end
-  elseif event == "QUEST_PROGRESS" then
-    if WoWStoryVoiceDB.questDialogue ~= false then captureCurrentNpc(GetProgressText()) end
-  elseif event == "QUEST_COMPLETE" then
-    if WoWStoryVoiceDB.questDialogue ~= false then captureCurrentNpc(GetRewardText()) end
-  elseif event == "QUEST_GREETING" then
-    if WoWStoryVoiceDB.questDialogue ~= false then captureCurrentNpc(GetGreetingText()) end
-  elseif event == "GOSSIP_SHOW" then
-    if WoWStoryVoiceDB.gossipDialogue ~= false then
-      local text = C_GossipInfo and C_GossipInfo.GetText and C_GossipInfo.GetText()
-      captureCurrentNpc(text)
-    end
-  else
-    if WoWStoryVoiceDB.monsterDialogue == false then return end
-    local text = select(1, ...)
-    local name = select(2, ...)
-    local guid = select(12, ...)
-    local isSubtitle = select(15, ...)
-    local hideSenderInLetterbox = select(16, ...)
-    if WoWStoryVoiceDB.skipBlizzardVoiced and (isSubtitle == true or hideSenderInLetterbox == true) then return end
-    if type(text) == "string" and text ~= "" then
-      activateSpeaker(guid or "", name or "Unknown", text)
-    end
   end
 end)
 
