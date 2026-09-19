@@ -62,7 +62,13 @@ jobs:
       - name: Build GUI companion folder
         shell: pwsh
         run: |
-          pyinstaller --noconfirm --clean --onedir --noupx --windowed --name WoWStoryVoice --hidden-import chatterbox.tts_turbo --collect-all chatterbox --collect-all perth --collect-all s3tokenizer --collect-all conformer --collect-all espeakng_loader --collect-all pystray Companion/app.py
+          pyinstaller --noconfirm --clean --onedir --noupx --windowed --name WoWStoryVoice --hidden-import chatterbox.tts_turbo --collect-all chatterbox --collect-all perth --collect-all s3tokenizer --collect-all conformer --collect-all espeakng_loader --collect-all pystray --copy-metadata requests --copy-metadata transformers --copy-metadata huggingface-hub --copy-metadata chatterbox-tts Companion/app.py
+      - name: Smoke-test frozen companion metadata
+        shell: pwsh
+        run: |
+          $env:PYTHONPATH = (Resolve-Path "dist/WoWStoryVoice/_internal").Path
+          python -c "import importlib.metadata as m; assert m.version('requests'); assert m.version('transformers'); assert m.version('huggingface-hub'); print('Frozen package metadata OK')"
+
       - name: Package addon
         shell: pwsh
         run: |
