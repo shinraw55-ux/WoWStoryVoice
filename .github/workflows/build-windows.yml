@@ -37,8 +37,12 @@ jobs:
           pip install torch==2.6.0 torchvision==0.21.0 torchaudio==2.6.0 --index-url https://download.pytorch.org/whl/cu124
           pip install -r Companion/requirements.txt
           pip install espeakng-loader phonemizer
+          # resemble-perth 1.0.1 still imports pkg_resources. New setuptools
+          # releases removed that module, causing perth to silently expose
+          # PerthImplicitWatermarker=None and Chatterbox to crash at startup.
+          pip install "setuptools<81"
           pip install pyinstaller
-          python -c "import torch; print('torch', torch.__version__, 'cuda build', torch.version.cuda); from chatterbox.tts_turbo import ChatterboxTurboTTS; print('Chatterbox Turbo import OK')"
+          python -c "import torch; print('torch', torch.__version__, 'cuda build', torch.version.cuda); import perth; assert callable(perth.PerthImplicitWatermarker), 'PerthImplicitWatermarker unavailable'; from chatterbox.tts_turbo import ChatterboxTurboTTS; print('Chatterbox Turbo + Perth import OK')"
       - name: Run regression and package tests
         shell: pwsh
         run: |
@@ -51,6 +55,7 @@ jobs:
           python Companion/test_latency.py
           python Companion/test_chatterbox.py
           python Companion/test_multi_engine.py
+          python -c "import perth; assert callable(perth.PerthImplicitWatermarker), 'Perth watermarker must be callable'"
           python -m py_compile Companion/companion.py Companion/runtime.py Companion/app.py Companion/voice_profiles.py Companion/emotion_profiles.py Companion/beta_hardening.py Companion/speaker_performance.py Companion/chatterbox_backend.py Companion/chatterbox_patch.py Companion/kokoro_backend.py Companion/cosyvoice_backend.py Companion/tts_registry.py Companion/multi_engine.py Companion/voice_reference.py
       - name: Locate espeak-ng data
         id: espeak
