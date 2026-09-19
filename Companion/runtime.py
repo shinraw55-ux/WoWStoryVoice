@@ -203,6 +203,7 @@ class SpeechController:
         self.epoch = 0
         self.lock = threading.Lock()
         self.state = state
+        self.shutdown_event = threading.Event()
         self.thread = threading.Thread(target=self._worker, name="WSV-Speech", daemon=True)
         self.thread.start()
 
@@ -233,9 +234,21 @@ class SpeechController:
         with self.lock:
             return epoch == self.epoch
 
+    def shutdown(self, timeout=2.0):
+        """Stop playback and terminate the speech worker deterministically."""
+        self.shutdown_event.set()
+        self.stop_and_clear()
+        # Wake queue.get() so the worker can observe shutdown_event.
+        self.jobs.put(None)
+        if self.thread.is_alive() and threading.current_thread() is not self.thread:
+            self.thread.join(timeout=max(0.0, float(timeout)))
+
     def _worker(self):
-        while True:
+        while not self.shutdown_event.is_set():
             job = self.jobs.get()
+            if job is None:
+                self.jobs.task_done()
+                break
             try:
                 if not self._is_current(job.epoch):
                     continue
