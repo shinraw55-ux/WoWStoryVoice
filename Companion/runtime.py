@@ -29,7 +29,8 @@ VERSION = "0.8.0"
 UPDATE_MANIFEST_URL = "https://raw.githubusercontent.com/shinraw55-ux/WoWStoryVoice/main/release.json"
 WORKFLOW_URL = "https://github.com/shinraw55-ux/WoWStoryVoice/actions/workflows/build-windows.yml"
 BRIDGE_STALE_SEC = 40.0
-FAST_TTS_SEGMENT_CHARS = 120
+FAST_TTS_SEGMENT_CHARS = 48
+CAPTURE_POLL_SEC = 0.012
 
 DATA = engine.DATA
 CACHE = engine.CACHE
@@ -293,8 +294,9 @@ class SpeechController:
                     pause = delivery.pause
                     self.state.set(last_delivery=delivery.emotion)
 
+                    engine_namespace = getattr(self.kokoro, "cache_namespace", "tts")
                     key_material = (
-                        f"{voice}\0{delivery.emotion}\0{speed:.3f}\0{volume:.3f}\0{segment}"
+                        f"{engine_namespace}\0{voice}\0{delivery.emotion}\0{speed:.3f}\0{volume:.3f}\0{segment}"
                     ).encode("utf-8")
                     key = hashlib.sha256(key_material).hexdigest()
                     wav = CACHE / f"{key}.wav"
@@ -422,7 +424,7 @@ def capture_loop(speech, state, stop_event, listening_event):
                 state.set(last_error=f"Bridge: {type(e).__name__}: {e}")
                 print(f"Bridge read error: {type(e).__name__}: {e}")
                 time.sleep(0.5)
-            time.sleep(0.04)
+            time.sleep(CAPTURE_POLL_SEC)
 
 
 def version_tuple(value):
