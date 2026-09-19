@@ -361,6 +361,7 @@ local function printStatus()
   print("  Gossip dialogue: " .. boolText(WoWStoryVoiceDB.gossipDialogue))
   print("  Ambient NPC dialogue: " .. boolText(WoWStoryVoiceDB.monsterDialogue))
   print("  Skip Blizzard subtitle/cinematic lines: " .. boolText(WoWStoryVoiceDB.skipBlizzardVoiced))
+  print("  NPC speaker indicator: " .. boolText(WoWStoryVoiceDB.speakerIndicator ~= false))
 end
 
 local function refreshOptionChecks()
@@ -369,6 +370,7 @@ local function refreshOptionChecks()
   if optionChecks.gossip then optionChecks.gossip:SetChecked(WoWStoryVoiceDB.gossipDialogue) end
   if optionChecks.monsters then optionChecks.monsters:SetChecked(WoWStoryVoiceDB.monsterDialogue) end
   if optionChecks.blizzard then optionChecks.blizzard:SetChecked(WoWStoryVoiceDB.skipBlizzardVoiced) end
+  if optionChecks.indicator then optionChecks.indicator:SetChecked(WoWStoryVoiceDB.speakerIndicator ~= false) end
 end
 
 local function makeCheck(parent, label, y, getter, setter)
@@ -444,9 +446,12 @@ local function createOptionsFrame()
   optionChecks.blizzard = makeCheck(frame, "Skip Blizzard subtitle/cinematic lines", -180,
     function() return WoWStoryVoiceDB.skipBlizzardVoiced end,
     function(v) WoWStoryVoiceDB.skipBlizzardVoiced = v end)
+  optionChecks.indicator = makeCheck(frame, "Show NPC speaker indicator", -216,
+    function() return WoWStoryVoiceDB.speakerIndicator ~= false end,
+    function(v) WoWStoryVoiceDB.speakerIndicator = v end)
 
   local hint = frame:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-  hint:SetPoint("TOPLEFT", 24, -222)
+  hint:SetPoint("TOPLEFT", 24, -254)
   hint:SetWidth(400)
   hint:SetJustifyH("LEFT")
   hint:SetText("Companion volume, startup, update checks and addon installation are controlled in the Windows app.")
