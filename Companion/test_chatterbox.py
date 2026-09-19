@@ -32,6 +32,17 @@ class ChatterboxBackendTests(unittest.TestCase):
         }
         self.assertGreater(len(values), 1)
 
+    def test_reference_lookup_never_generates_or_downloads_on_speech_path(self):
+        with tempfile.TemporaryDirectory() as temp:
+            backend = chatterbox_backend.ChatterboxBackend.__new__(
+                chatterbox_backend.ChatterboxBackend
+            )
+            backend.voice_dir = Path(temp) / "chatterbox-voices"
+            backend.voice_dir.mkdir(parents=True)
+            expected = backend.voice_dir / "am_michael.wav"
+            self.assertEqual(backend.reference_path("am_michael"), expected)
+            self.assertFalse(expected.exists())
+
     def test_emotion_tags_are_sparse_and_score_gated(self):
         self.assertEqual(
             chatterbox_backend.decorate_text("We lost them.", "sorrowful", 7),
