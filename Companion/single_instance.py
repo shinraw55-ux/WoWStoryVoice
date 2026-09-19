@@ -22,11 +22,12 @@ def acquire():
     create_mutex.argtypes = (wintypes.LPVOID, wintypes.BOOL, wintypes.LPCWSTR)
     create_mutex.restype = wintypes.HANDLE
 
+    ctypes.set_last_error(0)
     handle = create_mutex(None, False, _MUTEX_NAME)
-    if not handle:
-        raise ctypes.WinError(ctypes.get_last_error())
-
     error = ctypes.get_last_error()
+    if not handle:
+        raise ctypes.WinError(error)
+
     if error == 183:  # ERROR_ALREADY_EXISTS
         kernel32.CloseHandle(handle)
         return False
