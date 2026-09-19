@@ -73,7 +73,9 @@ jobs:
         run: |
           $env:PYTHONPATH = (Resolve-Path "dist/WoWStoryVoice/_internal").Path
           python -c "import importlib.metadata as m; assert m.version('requests'); assert m.version('transformers'); assert m.version('huggingface-hub'); assert m.version('setuptools'); import pkg_resources; import perth; assert callable(perth.PerthImplicitWatermarker), 'Frozen PerthImplicitWatermarker unavailable'; print('Frozen package metadata + Perth OK')"
-          if (-not (Test-Path "dist/WoWStoryVoice/_internal/pkg_resources")) { throw "Frozen runtime is missing pkg_resources" }
+          # pkg_resources can be stored inside PyInstaller's PYZ rather than as a
+          # physical _internal/pkg_resources directory. The import + Perth callable
+          # check above is the authoritative frozen-runtime smoke test.
 
       - name: Package addon
         shell: pwsh
