@@ -150,6 +150,31 @@ class AppPackageTests(unittest.TestCase):
             )
             self.assertEqual(voice, "am_fenrir")
 
+    def test_speech_worker_terminates_on_shutdown(self):
+        class FakeTTS:
+            pass
+
+        class FakeRegistry:
+            def __init__(self, available):
+                pass
+
+        class FakeState:
+            def set(self, **kwargs):
+                pass
+
+        original_registry = runtime.engine.VoiceRegistry
+        original_stop = runtime.engine.stop_audio
+        try:
+            runtime.engine.VoiceRegistry = FakeRegistry
+            runtime.engine.stop_audio = lambda: None
+            controller = runtime.SpeechController(FakeTTS(), ["voice"], FakeState())
+            self.assertTrue(controller.thread.is_alive())
+            controller.shutdown(timeout=1.0)
+            self.assertFalse(controller.thread.is_alive())
+        finally:
+            runtime.engine.VoiceRegistry = original_registry
+            runtime.engine.stop_audio = original_stop
+
     def test_addon_installer_rejects_zip_traversal(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
