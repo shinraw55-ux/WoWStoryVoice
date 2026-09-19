@@ -488,9 +488,24 @@ def install_addon_to(addons_dir):
     shutil.rmtree(temp_root, ignore_errors=True)
     shutil.rmtree(backup, ignore_errors=True)
     with zipfile.ZipFile(addon_zip, "r") as zf:
-        names = [n.replace("\\", "/") for n in zf.namelist()]
+        members = zf.infolist()
+        names = [info.filename.replace("\\", "/") for info in members]
         if not any(name.startswith("WoWStoryVoice/") for name in names):
             raise RuntimeError("Addon ZIP has an unexpected structure.")
+        root = temp_root.resolve()
+        for info, name in zip(members, names):
+            parts = [part for part in name.split("/") if part not in ("", ".")]
+            if (
+                not parts
+                or parts[0] != "WoWStoryVoice"
+                or ".." in parts
+                or name.startswith("/")
+                or (len(name) >= 2 and name[1] == ":")
+            ):
+                raise RuntimeError(f"Unsafe addon ZIP entry rejected: {name}")
+            destination = (temp_root / Path(*parts)).resolve()
+            if os.path.commonpath((str(root), str(destination))) != str(root):
+                raise RuntimeError(f"Unsafe addon ZIP path rejected: {name}")
         zf.extractall(temp_root)
     extracted = temp_root / "WoWStoryVoice"
     if not (extracted / "WoWStoryVoice.toc").exists():
