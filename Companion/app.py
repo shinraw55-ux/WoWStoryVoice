@@ -20,6 +20,7 @@ import multi_engine
 import tts_registry
 import speaker_performance
 import single_instance
+import latency_instrumentation
 
 # Keep WSV6 transport untouched; TTS is selected independently.
 multi_engine.configure_runtime(runtime)
@@ -28,6 +29,10 @@ speaker_performance.configure_runtime(runtime, voice_profiles)
 runtime.synthesize_to_wav = beta_hardening.make_atomic_synthesizer(runtime.synthesize_to_wav)
 runtime.engine.play_wav = beta_hardening.make_validating_player(runtime.engine.play_wav)
 runtime.SpeechController = beta_hardening.make_bounded_controller(runtime.SpeechController)
+# Install probes after all production wrappers so measurements include the
+# exact path the packaged application uses. The probes only observe timings;
+# they do not alter synthesis, queueing, transport, or playback semantics.
+latency_instrumentation.install(runtime, voice_profiles)
 
 VERSION = runtime.VERSION
 
