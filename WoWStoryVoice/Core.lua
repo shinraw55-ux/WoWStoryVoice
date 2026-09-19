@@ -154,6 +154,13 @@ local function enqueueMessage(kind, npcGuid, npc, text, priority, quick)
   npc = npc or "Unknown"
   text = text or ""
 
+  -- Notify visual modules from the exact same accepted dialogue path as the transport.
+  -- Strip the private profile suffix before exposing the GUID to UI modules.
+  if kind ~= "control" and type(WoWStoryVoice_ActivateSpeaker) == "function" then
+    local visualGuid = string.match(npcGuid, "^(.-)#wsv#") or npcGuid
+    pcall(WoWStoryVoice_ActivateSpeaker, visualGuid, npc, text, kind)
+  end
+
   local message = kind .. "\31" .. npcGuid .. "\31" .. npc .. "\31" .. text
   local chunkTotal = math.max(1, math.ceil(#message / CHUNK_DATA_MAX))
   if chunkTotal > 65535 then
