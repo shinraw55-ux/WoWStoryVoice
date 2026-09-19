@@ -194,6 +194,7 @@ class SpeechJob:
     npc_name: str
     text: str
     enqueued_at: float
+    received_at: float = 0.0
 
 
 class SpeechController:
@@ -214,7 +215,8 @@ class SpeechController:
             return
         with self.lock:
             epoch = self.epoch
-        self.jobs.put(SpeechJob(epoch, kind, npc_guid, npc_name, cleaned, time.perf_counter()))
+        now = time.perf_counter()
+        self.jobs.put(SpeechJob(epoch, kind, npc_guid, npc_name, cleaned, now, now))
         self.state.set(queue_size=self.jobs.qsize(), last_message=f"{npc_name}: {cleaned[:90]}")
         print(f"Speech queued: [{kind}] {npc_name} ({len(cleaned.encode('utf-8'))} bytes)")
 
@@ -253,7 +255,8 @@ class SpeechController:
             try:
                 if not self._is_current(job.epoch):
                     continue
-                queue_wait_ms = (time.perf_counter() - job.enqueued_at) * 1000.0
+                dequeue_at = time.perf_counter()
+                queue_wait_ms = (dequeue_at - job.enqueued_at) * 1000.0
                 voice = self.registry.voice_for(job.npc_guid, job.npc_name)
                 # Shorter chunks materially reduce time-to-first-audio because
                 # Kokoro can begin with a compact phrase instead of waiting for
@@ -326,8 +329,9 @@ class SpeechController:
                         total_ms = (time.perf_counter() - job.enqueued_at) * 1000.0
                         self.state.set(last_latency_ms=round(total_ms))
                         print(
-                            f"AUDIO START: {job.npc_name} total_from_queue={total_ms:.0f}ms "
-                            f"(queue={queue_wait_ms:.0f}ms, first_tts={synth_ms:.0f}ms)"
+                            f"LATENCY AUDIO_START npc={job.npc_name!r} total={total_ms:.0f}ms "
+                            f"queue={queue_wait_ms:.0f}ms first_tts={synth_ms:.0f}ms "
+                            f"segments={len(segments)} first_chars={len(segment)}"
                         )
                         first_audio = False
                     engine.play_wav(wav, blocking=True)
