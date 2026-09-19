@@ -1,3 +1,4 @@
+import threading
 import time
 from pathlib import Path
 import numpy as np
@@ -6,9 +7,41 @@ import soundfile as sf
 import tts_registry
 
 
+def _install_log_io_probe(runtime_module):
+    """Measure synchronous log-file cost per thread without changing log output."""
+    log = getattr(runtime_module, "LOG", None)
+    if log is None or getattr(log, "_wsv_latency_probe", False):
+        return
+
+    original_write = log.write
+    local = threading.local()
+
+    def measured_write(text):
+        started = time.perf_counter()
+        try:
+            return original_write(text)
+        finally:
+            elapsed_ms = (time.perf_counter() - started) * 1000.0
+            local.io_ms = getattr(local, "io_ms", 0.0) + elapsed_ms
+            local.write_calls = getattr(local, "write_calls", 0) + 1
+
+    def thread_io_snapshot():
+        return (
+            float(getattr(local, "io_ms", 0.0)),
+            int(getattr(local, "write_calls", 0)),
+        )
+
+    log.write = measured_write
+    log.wsv_thread_io_snapshot = thread_io_snapshot
+    log._wsv_latency_probe = True
+
+
 def configure_runtime(runtime_module):
     if getattr(runtime_module, "_multi_engine_configured", False):
         return
+
+    _install_log_io_probe(runtime_module)
+
     runtime_module.SETTINGS.setdefault("tts_engine", tts_registry.DEFAULT_ENGINE)
     runtime_module.SETTINGS["tts_engine"] = tts_registry.normalize_engine(runtime_module.SETTINGS["tts_engine"])
     if not tts_registry.SPECS[runtime_module.SETTINGS["tts_engine"]].bundled:
@@ -40,6 +73,8 @@ def configure_runtime(runtime_module):
     def synthesize_to_wav(tts, voice, text, wav, speed=1.0, volume=1.0):
         pipeline_started = time.perf_counter()
         rendered_text = str(text)
+        log_snapshot = getattr(runtime_module.LOG, "wsv_thread_io_snapshot", lambda: (0.0, 0))
+        log_before_ms, log_before_calls = log_snapshot()
 
         decorate_started = time.perf_counter()
         if getattr(tts, "engine_name", "") == "Chatterbox Turbo":
@@ -71,12 +106,17 @@ def configure_runtime(runtime_module):
         wav_write_ms = (time.perf_counter() - write_started) * 1000.0
 
         total_ms = (time.perf_counter() - pipeline_started) * 1000.0
+        log_after_ms, log_after_calls = log_snapshot()
+        log_io_ms = max(0.0, log_after_ms - log_before_ms)
+        log_calls = max(0, log_after_calls - log_before_calls)
         backend_timings = dict(getattr(tts, "last_timings", {}) or {})
         tts.last_pipeline_timings = {
             "decorate_ms": decorate_ms,
             "generate_call_ms": generate_ms,
             "postprocess_ms": post_ms,
             "wav_write_ms": wav_write_ms,
+            "log_io_ms": log_io_ms,
+            "log_write_calls": log_calls,
             "pipeline_total_ms": total_ms,
             "backend": backend_timings,
             "voice_source": str(source),
@@ -85,7 +125,8 @@ def configure_runtime(runtime_module):
             "LATENCY TTS_PIPELINE "
             f"engine={getattr(tts, 'engine_name', 'unknown')!r} chars={len(rendered_text)} "
             f"decorate={decorate_ms:.1f}ms generate_call={generate_ms:.1f}ms "
-            f"post={post_ms:.1f}ms wav_write={wav_write_ms:.1f}ms total={total_ms:.1f}ms"
+            f"post={post_ms:.1f}ms wav_write={wav_write_ms:.1f}ms "
+            f"log_io={log_io_ms:.1f}ms log_calls={log_calls} total={total_ms:.1f}ms"
         )
         return int(sr), audio.size, peak * volume
 
