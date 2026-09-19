@@ -18,6 +18,20 @@ class ChatterboxBackendTests(unittest.TestCase):
         self.assertIn("af_heart", voices)
         self.assertGreaterEqual(len(voices), 20)
 
+    def test_builtin_profiles_have_audible_gender_separation(self):
+        male = chatterbox_backend.profile_rate_factor("am_michael")
+        female = chatterbox_backend.profile_rate_factor("af_heart")
+        self.assertLess(male, 1.0)
+        self.assertGreater(female, 1.0)
+        self.assertGreater(female - male, 0.10)
+
+    def test_builtin_profiles_vary_within_gender(self):
+        values = {
+            round(chatterbox_backend.profile_rate_factor(v), 4)
+            for v in ("am_michael", "am_fenrir", "bm_george", "am_puck")
+        }
+        self.assertGreater(len(values), 1)
+
     def test_emotion_tags_are_sparse_and_score_gated(self):
         self.assertEqual(
             chatterbox_backend.decorate_text("We lost them.", "sorrowful", 7),
