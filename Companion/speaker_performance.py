@@ -1,6 +1,8 @@
 import time
 from dataclasses import replace
 
+import latency_instrumentation
+
 
 SPEAKER_REPEAT_SEC = 30.0
 DEFAULT_EXPRESSIVENESS = 1.35
@@ -210,4 +212,5 @@ def configure_runtime(runtime_module, voice_profiles_module):
         voice_profiles_module,
         runtime_module.SETTINGS,
     )
+    latency_instrumentation.install(runtime_module, voice_profiles_module)
     runtime_module._speaker_performance_configured = True
