@@ -22,7 +22,7 @@ def configure_runtime(runtime_module):
     runtime_module.CACHE = runtime_module.DATA / ("cache-" + selected)
     runtime_module.CACHE.mkdir(parents=True, exist_ok=True)
     if selected == tts_registry.ENGINE_CHATTERBOX:
-        runtime_module.FAST_TTS_SEGMENT_CHARS = 90
+        runtime_module.FAST_TTS_SEGMENT_CHARS = 48
 
     def initialize_tts():
         key = tts_registry.normalize_engine(runtime_module.SETTINGS.get("tts_engine"))
