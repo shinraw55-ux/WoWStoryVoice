@@ -1,5 +1,5 @@
-import os
 import hashlib
+import time
 from collections import OrderedDict
 from pathlib import Path
 
@@ -88,6 +88,8 @@ class ChatterboxBackend:
         self.engine_name = ENGINE_NAME
         self._condition_cache = OrderedDict()
         self._missing_refs_logged = set()
+        self._last_voice_timings = {}
+        self.last_timings = {}
 
         # Import the heavy stack lazily. This keeps protocol/unit tests fast and
         # lets packaging tests import the module without downloading a model.
@@ -128,27 +130,36 @@ class ChatterboxBackend:
         return profile_voice_ids()
 
     def reference_path(self, voice):
-        custom = self.voice_dir / f"{str(voice or '').strip()}.wav"
-        if self._valid_reference(custom):
-            return custom
-        try:
-            from voice_reference import ensure_reference
-            return ensure_reference(self.data_dir, voice)
-        except Exception as e:
-            print(f"Reference generation warning for {voice}: {type(e).__name__}: {e}")
-            return custom
+        """Return only an already-prepared Chatterbox reference WAV.
+
+        Reference generation must never happen on the live speech path. The old
+        implementation called voice_reference.ensure_reference() here, which in
+        turn could initialize/download Kokoro while an NPC line was waiting to
+        speak. That hidden work is both unnecessary for the bundled Chatterbox
+        runtime and catastrophic for latency on a fresh machine.
+        """
+        return self.voice_dir / f"{str(voice or '').strip()}.wav"
 
     def _valid_reference(self, path):
         try:
+            path = Path(path)
+            if not path.is_file():
+                return False
             info = sf.info(str(path))
             return info.frames / float(info.samplerate) >= MIN_REFERENCE_SECONDS
         except Exception:
             return False
 
     def _activate_voice(self, voice):
+        started = time.perf_counter()
         voice = str(voice or "").strip()
+
+        ref_started = time.perf_counter()
         ref = self.reference_path(voice)
-        if not voice or not self._valid_reference(ref):
+        has_reference = bool(voice) and self._valid_reference(ref)
+        ref_check_ms = (time.perf_counter() - ref_started) * 1000.0
+
+        if not has_reference:
             # Preserve the model's default unconditional state when Turbo does
             # not ship precomputed conditionals.
             self.model.conds = self._builtin_conds
@@ -158,16 +169,34 @@ class ChatterboxBackend:
                     f"Chatterbox voice profile {voice}: no >=5s reference WAV; "
                     "using built-in voice."
                 )
+            self._last_voice_timings = {
+                "activate_ms": (time.perf_counter() - started) * 1000.0,
+                "reference_check_ms": ref_check_ms,
+                "prepare_conditionals_ms": 0.0,
+                "condition_cache_hit": False,
+                "voice_source": "builtin",
+            }
             return "builtin"
 
         cached = self._condition_cache.pop(voice, None)
+        cache_hit = cached is not None
+        prepare_ms = 0.0
         if cached is None:
+            prepare_started = time.perf_counter()
             self.model.prepare_conditionals(str(ref), exaggeration=0.0)
+            prepare_ms = (time.perf_counter() - prepare_started) * 1000.0
             cached = self.model.conds
         self._condition_cache[voice] = cached
         while len(self._condition_cache) > MAX_CONDITION_CACHE:
             self._condition_cache.popitem(last=False)
         self.model.conds = cached
+        self._last_voice_timings = {
+            "activate_ms": (time.perf_counter() - started) * 1000.0,
+            "reference_check_ms": ref_check_ms,
+            "prepare_conditionals_ms": prepare_ms,
+            "condition_cache_hit": cache_hit,
+            "voice_source": ref.name,
+        }
         return ref.name
 
     def warmup(self):
@@ -187,18 +216,32 @@ class ChatterboxBackend:
                 pass
 
     def generate(self, text, *, voice="", temperature=0.78, top_p=0.94, top_k=850, speed=1.0, **_):
+        total_started = time.perf_counter()
+        text = str(text)
+
         source = self._activate_voice(voice)
+        activation = dict(self._last_voice_timings)
+
+        generate_started = time.perf_counter()
         with self.torch.inference_mode():
             wav = self.model.generate(
-                str(text),
+                text,
                 temperature=float(temperature),
                 top_p=float(top_p),
                 top_k=int(top_k),
             )
+        model_generate_ms = (time.perf_counter() - generate_started) * 1000.0
+
+        transfer_started = time.perf_counter()
         audio = wav.squeeze().detach().float().cpu().numpy()
+        gpu_to_cpu_ms = (time.perf_counter() - transfer_started) * 1000.0
+
+        post_started = time.perf_counter()
         audio = np.asarray(audio, dtype=np.float32).reshape(-1)
         if audio.size == 0:
             raise RuntimeError("Chatterbox returned an empty audio buffer")
+        postprocess_ms = (time.perf_counter() - post_started) * 1000.0
+
         # Turbo's bundled model contains one built-in speaker. When no cloned
         # reference exists, make the selected NPC profile audibly distinct at
         # essentially zero compute cost by changing playback sample rate. This
@@ -207,4 +250,24 @@ class ChatterboxBackend:
         output_rate = self.sample_rate
         if source == "builtin":
             output_rate = max(8000, int(round(self.sample_rate * profile_rate_factor(voice))))
+
+        total_ms = (time.perf_counter() - total_started) * 1000.0
+        self.last_timings = {
+            **activation,
+            "model_generate_ms": model_generate_ms,
+            "gpu_to_cpu_ms": gpu_to_cpu_ms,
+            "postprocess_ms": postprocess_ms,
+            "backend_total_ms": total_ms,
+            "text_chars": len(text),
+        }
+        print(
+            "LATENCY CHATTERBOX "
+            f"chars={len(text)} source={source} "
+            f"activate={activation.get('activate_ms', 0.0):.1f}ms "
+            f"ref_check={activation.get('reference_check_ms', 0.0):.1f}ms "
+            f"prepare={activation.get('prepare_conditionals_ms', 0.0):.1f}ms "
+            f"model_generate={model_generate_ms:.1f}ms "
+            f"gpu_to_cpu={gpu_to_cpu_ms:.1f}ms post={postprocess_ms:.1f}ms "
+            f"backend_total={total_ms:.1f}ms"
+        )
         return audio, output_rate, source
