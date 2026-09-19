@@ -39,14 +39,16 @@ class DialogueLatencyTests(unittest.TestCase):
         self.assertIn("for _, packet in ipairs(packets) do txQueue[#txQueue + 1] = packet end", text)
         self.assertNotIn("for _ = 1, rounds do", text)
 
-    def test_packet_hold_time_remains_longer_than_companion_poll_period(self):
+    def test_transport_and_capture_are_low_latency(self):
         match = re.search(r"local TX_HOLD_SEC = ([0-9.]+)", CORE)
         self.assertIsNotNone(match)
         hold = float(match.group(1))
-        self.assertGreaterEqual(hold, 0.12)
+        self.assertLessEqual(hold, 0.05)
+        self.assertGreater(hold, runtime.CAPTURE_POLL_SEC * 2)
+        self.assertLessEqual(runtime.CAPTURE_POLL_SEC, 0.015)
 
     def test_tts_fast_start_chunks_are_bounded(self):
-        self.assertLessEqual(runtime.FAST_TTS_SEGMENT_CHARS, 140)
+        self.assertLessEqual(runtime.FAST_TTS_SEGMENT_CHARS, 48)
         sample = "This is a deliberately long line of dialogue " * 12
         chunks = runtime.engine.split_dialogue(sample, limit=runtime.FAST_TTS_SEGMENT_CHARS)
         self.assertGreater(len(chunks), 1)
