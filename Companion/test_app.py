@@ -1,4 +1,5 @@
 import json
+import zipfile
 import re
 import tempfile
 import unittest
@@ -148,6 +149,23 @@ class AppPackageTests(unittest.TestCase):
                 "Hogger",
             )
             self.assertEqual(voice, "am_fenrir")
+
+    def test_addon_installer_rejects_zip_traversal(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            archive = root / "bad.zip"
+            addons = root / "AddOns"
+            with zipfile.ZipFile(archive, "w") as zf:
+                zf.writestr("WoWStoryVoice/WoWStoryVoice.toc", "## Interface: 120000")
+                zf.writestr("WoWStoryVoice/../../escaped.txt", "nope")
+            original = runtime.locate_addon_zip
+            runtime.locate_addon_zip = lambda: archive
+            try:
+                with self.assertRaisesRegex(RuntimeError, "Unsafe addon ZIP"):
+                    runtime.install_addon_to(addons)
+                self.assertFalse((root / "escaped.txt").exists())
+            finally:
+                runtime.locate_addon_zip = original
 
 
 if __name__ == "__main__":
