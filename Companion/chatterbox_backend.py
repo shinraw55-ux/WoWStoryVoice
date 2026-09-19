@@ -1,4 +1,5 @@
 import os
+import hashlib
 from collections import OrderedDict
 from pathlib import Path
 
@@ -37,6 +38,27 @@ EMOTION_TAGS = {
 
 def profile_voice_ids():
     return list(PROFILE_VOICE_IDS)
+
+
+def profile_rate_factor(voice):
+    """Give built-in Chatterbox profiles audible, deterministic separation.
+
+    Chatterbox Turbo ships one built-in speaker. Without a >=5s reference clip,
+    changing the Kokoro-style profile ID alone cannot change the speaker. Keep
+    the model voice, but vary playback rate/pitch by profile so gender/profile
+    selection is audible without adding another inference pass.
+    """
+    voice = str(voice or "").strip()
+    if len(voice) < 2:
+        return 1.0
+    gender = voice[1]
+    digest = hashlib.sha256(voice.encode("utf-8")).digest()
+    variation = (digest[0] / 255.0) * 0.06
+    if gender == "m":
+        return 0.88 + variation
+    if gender == "f":
+        return 1.06 + variation
+    return 0.97 + variation
 
 
 def decorate_text(text, emotion="neutral", score=0):
@@ -177,4 +199,12 @@ class ChatterboxBackend:
         audio = np.asarray(audio, dtype=np.float32).reshape(-1)
         if audio.size == 0:
             raise RuntimeError("Chatterbox returned an empty audio buffer")
-        return audio, self.sample_rate, source
+        # Turbo's bundled model contains one built-in speaker. When no cloned
+        # reference exists, make the selected NPC profile audibly distinct at
+        # essentially zero compute cost by changing playback sample rate. This
+        # changes pitch and pace together; real per-speaker timbre still requires
+        # reference WAVs and is handled when such a reference is available.
+        output_rate = self.sample_rate
+        if source == "builtin":
+            output_rate = max(8000, int(round(self.sample_rate * profile_rate_factor(voice))))
+        return audio, output_rate, source
